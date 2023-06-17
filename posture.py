@@ -17,28 +17,16 @@ class Posture:
                                         ) -> None:
         self.trans_mat:np.ndarray  = np.eye(4)
         if rvec is not None:
-            if isinstance( rvec, (list, tuple)):
-                rvec = np.array(rvec, np.float32).squeeze()
+            rvec = np.array(rvec, np.float32).squeeze()
             self.set_rvec(rvec)
-            # if tvec is not None:
-            #     self.set_tvec(tvec.squeeze())
-            # else:
-            #     self.set_tvec(np.array([0., 0., 0.]))
-        elif rmat is not None:
+        if rmat is not None:
             self.set_rmat(rmat)
-            if tvec is not None:
-                self.set_tvec(tvec)
-            else:
-                self.set_tvec(np.array([0., 0., 0.]))
-        elif tvec is not None:
-            if isinstance(tvec, (list, tuple)):
-                tvec = np.array(tvec, np.float32).squeeze()
+        if tvec is not None:
+            tvec = np.array(tvec, np.float32).squeeze()
             self.set_tvec(tvec)
-        elif homomat is not None:
+        if homomat is not None:
             self.set_homomat(homomat)
-        else:
-            pass
-
+        
     def __mul__(self, posture):
         posture = Posture(homomat = self.trans_mat.dot(posture.trans_mat))
         return posture
