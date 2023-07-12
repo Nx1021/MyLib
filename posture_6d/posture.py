@@ -27,10 +27,24 @@ class Posture:
         if homomat is not None:
             self.set_homomat(homomat)
         
-    def __mul__(self, posture):
-        posture = Posture(homomat = self.trans_mat.dot(posture.trans_mat))
-        return posture
+    def __mul__(self, obj):
+        if isinstance(obj, Posture):
+            posture = Posture(homomat = self.trans_mat.dot(obj.trans_mat))
+            return posture
+        elif isinstance(obj, np.ndarray):
+            # the shape of the array must be [N, 3] or [N, 4]
+            if (len(obj.shape) == 1 and obj.size == 3 or obj.size == 4):
+                pass
+            elif (len(obj.shape) == 2 and obj.shape[1] == 3 or obj.shape[1] == 4):
+                pass
+            else:
+                raise ValueError
+            return (self.rmat.dot(obj[..., :3].T)).T + self.tvec
     
+    def inv(self):
+        inv_transmat = self.inv_transmat
+        return Posture(homomat=inv_transmat)
+
     @property
     def inv_transmat(self) -> np.ndarray :
         return np.linalg.inv(self.trans_mat)
