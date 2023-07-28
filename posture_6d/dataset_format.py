@@ -19,81 +19,148 @@ from .posture import Posture
 from .mesh_manager import MeshMeta
 from .utils import JsonIO, JSONDecodeError
 
-
 class _DataCluster():
-    def __init__(self, format_obj:"DatasetFormat", sub_dir:str, *args, **kwargs) -> None:
-        self._init_attr(format_obj, sub_dir, *args, **kwargs)
-        self.open()
-
-    @property
-    def cover_write(self):
-        return self.format_obj.cover_write
-
-    def _init_attr(self, format_obj:"DatasetFormat", sub_dir:str, *args, **kwargs):
-        self._closed = True
-        self._read_only = True
-        self.format_obj:DatasetFormat = format_obj
-        self.incomplete = self.format_obj.incomplete
-        self._updated = False
-        self.directory = os.path.join(format_obj.directory, sub_dir)
-
-    def open(self):
-        if self.incomplete:
-            self.clear()
-            self.incomplete = False
-        self._closed = False
-
-    def close(self):
-        self._updated = False
-        self._closed = True  
-
-    def is_close(self):
-        return self._closed
-
-    def set_read_only(self, read_only = True):
-        self._read_only = read_only
-
-    def is_read_only(self):
-        return self._read_only
-
-    @staticmethod
-    def cluster_closed_decorator(is_write_func):
-        def write_func_wrapper(func):
-            def wrapper(self:"_DataCluster", *args, **kwargs):
-                if self._closed:
-                    warnings.warn(f"{self.__class__.__name__} is closed, any io operation will not be executed.", Warning)
-                    return None
-                elif self._read_only and is_write_func:
-                    warnings.warn(f"{self.__class__.__name__} is read only, any write operation will not be executed.", Warning)
-                    return None
-                else:
-                    rlt = func(self, *args, **kwargs)
-                    self._updated = is_write_func
-                    return rlt
-            return wrapper
-        return write_func_wrapper
-    
-    def clear(self):
-        pass
-
-
-class BaseJsonDict(dict, _DataCluster):
     '''
-    dict for base json
-    ----
-    Returns None if accessing an key that does not exist
+    This is a private class representing a data cluster used for managing datasets with a specific format.
 
     attr
     ----
     * self.format_obj: DatasetFormat
     * self.closed: bool, Control the shielding of reading and writing, 
         if it is true, the instance will not write, and the read will get None
-    '''
-    def __init__(self, format_obj: "DatasetFormat", sub_dir: str) -> None:
-        _DataCluster.__init__(self, format_obj, sub_dir)
+    * register: bool, whether to register to format_obj
+    * _incomplete: bool, whether the data is incomplete
+    * _closed: bool, Indicates whether the cluster is closed or open.
+    * _read_only: bool, Indicates whether the cluster is read-only or write-enabled.
+    * _updated: bool, Indicates if any changes have been made to the cluster.
+    * directory: str, Directory path for the cluster.
 
-    def _init_attr(self, format_obj: "DatasetFormat", sub_dir: str):
-        _DataCluster._init_attr(self, format_obj, sub_dir)
+    property
+    -----
+    * cover_write: bool, Control the shielding of writing,
+
+    method
+    -----
+    * _init_attr: initialize additional attributes specified by subclasses.
+    * open: open the cluster for operation.
+    * close: close the cluster, preventing further operations.
+    * is_close: check if the cluster is closed.
+    * set_read_only: set the cluster as read-only or write-enabled.
+    * is_read_only: check if the cluster is read-only.
+    * cluster_closed_decorator: decorator function to handle writing operations when the cluster is closed or read-only.
+    * clear: clear any data in the cluster. Subclasses may implement this method.
+    '''
+    def __init__(self, format_obj: "DatasetFormat", sub_dir: str, register=True, *args, **kwargs) -> None:
+        '''Initialize the data cluster with the provided format_obj, sub_dir, and registration flag.'''
+        self.format_obj = format_obj
+        self.sub_dir = sub_dir
+        self.register = register
+        self._incomplete = self.format_obj.incomplete
+        self._closed = True  # Indicates whether the cluster is closed or open.
+        self._read_only = True  # Indicates whether the cluster is read-only or write-enabled.
+        self._updated = False  # Indicates if any changes have been made to the cluster.
+        self.directory = os.path.join(format_obj.directory, self.sub_dir)  # Directory path for the cluster.
+        self._init_attr(*args, **kwargs)  # Initializes additional attributes specified by subclasses.
+        self.open()  # Opens the cluster for operation.
+
+    @property
+    def cover_write(self):
+        '''Property that returns whether the cluster format allows write operations.'''
+        return self.format_obj.cover_write
+
+    def _init_attr(self, *args, **kwargs):
+        '''Method to initialize additional attributes specified by subclasses.'''
+        pass
+
+    def open(self):
+        '''Method to open the cluster for operation.'''
+        if self._incomplete:
+            self.clear(True)  # Clears any incomplete data if present.
+            self._incomplete = False
+        self._closed = False  # Marks the cluster as open for operation.
+
+    def close(self):
+        '''Method to close the cluster, preventing further operations.'''
+        self._updated = False  # Resets the updated flag to false.
+        self._closed = True  # Marks the cluster as closed.
+
+    def is_close(self):
+        '''Method to check if the cluster is closed.'''
+        return self._closed
+
+    def set_read_only(self, read_only=True):
+        '''Method to set the cluster as read-only or write-enabled.'''
+        self._read_only = read_only
+
+    def is_read_only(self):
+        '''Method to check if the cluster is read-only.'''
+        return self._read_only
+
+    @staticmethod
+    def cluster_closed_decorator(is_write_func):
+        '''
+        brief
+        -----
+        Decorator function to handle writing operations when the cluster is closed or read-only. \n
+        if the cluster is closed, the decorated function will not be executed and return None. \n
+        if the cluster is read-only and the decorated function is a writing operation, the decorated function will not be executed and return None.\n
+        
+        parameter
+        -----
+        is_write_func: bool, indicates whether the decorated function is a writing operation. 
+        '''
+        def write_func_wrapper(func):
+            def wrapper(self: "_DataCluster", *args, **kwargs):
+                if self._closed:
+                    warnings.warn(f"{self.__class__.__name__} is closed, any I/O operation will not be executed.",
+                                  Warning)
+                    return None
+                elif self._read_only and is_write_func:
+                    warnings.warn(f"{self.__class__.__name__} is read-only, any write operation will not be executed.",
+                                  Warning)
+                    return None
+                else:
+                    rlt = func(self, *args, **kwargs)  # Calls the original function.
+                    self._updated = is_write_func  # Marks the cluster as updated after writing operations.
+                    return rlt
+            return wrapper
+        return write_func_wrapper
+
+    def clear(self, ignore_warning = False):
+        '''
+        Method to clear any data in the cluster. Subclasses may implement this method.
+        * it is dargerous
+        '''
+        if not ignore_warning:
+            y = input("All files in {} will be deleted, please enter 'y' to confirm".format(self.directory))
+        else:
+            y = 'y'
+        if y == 'y':
+            return True
+        else:
+            return False
+
+class BaseJsonDict(dict, _DataCluster):
+    '''
+    dict for base json
+    ----
+    it is a subclass of dict, so it can be used as a dict \n
+    returns None if accessing an key that does not exist
+
+    attr
+    ----
+    see _DataCluster
+
+    method
+    ----
+    see _DataCluster
+    * clear: clear all data of the dict and clear the json file
+    '''
+    def __init__(self, format_obj: "DatasetFormat", sub_dir: str, register = True) -> None:
+        _DataCluster.__init__(self, format_obj, sub_dir, register)
+
+    def _init_attr(self, *args, **kwargs):
+        _DataCluster._init_attr(self, *args, **kwargs)
         if os.path.exists(self.directory):
             try:
                 value = JsonIO.load_json(self.directory)
@@ -102,10 +169,11 @@ class BaseJsonDict(dict, _DataCluster):
         else:
             value = {}
         dict.__init__(self, value)
-        if self.directory not in self.format_obj.base_json:
-            self.format_obj.base_json.update({self.directory: self})
-        else:
-            self.format_obj.base_json[self.directory].update(self) 
+        if self.register:
+            if self.directory not in self.format_obj.base_json:
+                self.format_obj.base_json.update({self.directory: self})
+            else:
+                self.format_obj.base_json[self.directory].update(self) 
 
     @_DataCluster.cluster_closed_decorator(False)
     def __getitem__(self, key):
@@ -123,41 +191,65 @@ class BaseJsonDict(dict, _DataCluster):
     def update(self, *arg, **kw):
         super().update(*arg, **kw)
 
-    def clear(self) -> None:
-        with open(self.directory, 'w'):
-            pass
-        return super().clear()
+    @_DataCluster.cluster_closed_decorator(True)
+    def clear(self, ignore_warning = False):
+        '''
+        brief
+        -----
+        clear all data and remove the directory, 
+        defalut to ask before executing
+        '''
+        if _DataCluster.clear(self, ignore_warning):
+            with open(self.directory, 'w'):
+                pass
+            return True
+        else:
+            return False
 
 class Elements(_DataCluster):
     '''
     elements manager
     ----
-    Returns None if accessing an data_id that does not exist
-    will not write if the element is None
+    Returns None if accessing an data_id that does not exist \n
+    will not write if the element is None \n 
+    it can be used as an iterator, the iterator will return (data_id, element) \n
 
     attr
     ----
-    * self.format_obj: DatasetFormat
-    * self.dir_: str, the directory to store datas
-    * self.readfunc:  Callable, how to read one element from disk
-    * self.writefunc: Callable, how to write one element to disk
+    see _DataCluster
+    * readfunc:  Callable, how to read one element from disk, the parameter must be (path)
+    * writefunc: Callable, how to write one element to disk, the parameter must be (path, element)
+    * suffix: str, the suffix of the file
     * filllen: int, to generate the store path
     * fillchar: str, to generate the store path
-    * self.closed: bool, Control the shielding of reading and writing, 
-        if it is true, the instance will not write, and the read will get None
+    * _data_i_dir_map: dict[int, str], the map of data_id and directory name
+    * _index: int, the index of the iterator
+    * _max_idx: int, the max index of the iterator
+
+    method
+    ----
+    * __len__: return the number of elements
+    * __iter__: return the iterator
+    * __next__: return the next element
+    * read: read one element from disk with the logic of self.readfunc
+    * write: write one element to disk with the logic of self.writefunc
+    * path_format: format the path of the element
+    * clear: clear all data of the dict and clear directory
+    * _init_data_i_dir_map: init the _data_i_dir_map
     '''
     def __init__(self, 
                 format_obj:"DatasetFormat",
                 sub_dir,
-                read_func:Callable, 
-                write_func:Callable, 
-                suffix:str, 
+                register = True,
+                read_func:Callable = lambda x: None, 
+                write_func:Callable = lambda x,y: None, 
+                suffix:str = '.txt', 
                 filllen = 6, 
                 fillchar = '0') -> None:
-        super().__init__(format_obj, sub_dir, read_func, write_func, suffix, filllen, fillchar)
+        super().__init__(format_obj, sub_dir, register, read_func, write_func, suffix, filllen, fillchar)
 
-    def _init_attr(self, format_obj: "DatasetFormat", sub_dir: str, read_func, write_func, suffix, filllen, fillchar):
-        super()._init_attr(format_obj, sub_dir)
+    def _init_attr(self, read_func, write_func, suffix, filllen, fillchar, *args, **kwargs):
+        super()._init_attr(*args, **kwargs)
         self.filllen    = filllen
         self.fillchar   = fillchar
         self.suffix     = suffix
@@ -170,7 +262,8 @@ class Elements(_DataCluster):
         self._index = 0
         self._max_idx = 0
 
-        self.format_obj.elements[self.directory] = self # register to format_obj
+        if self.register:
+            self.format_obj.elements[self.directory] = self # register to format_obj
 
     def __len__(self):
         '''
@@ -209,6 +302,13 @@ class Elements(_DataCluster):
 
     @_DataCluster.cluster_closed_decorator(False)
     def read(self, data_i, appdir = "", appname = ""):
+        '''
+        parameter
+        ----
+        * data_i: int, the index of the data
+        * appdir: str, the sub directory of the root directory
+        * appname: str, the string to be added to the file name(before the suffix)
+        '''
         path = self.path_format(data_i, appdir=appdir, appname=appname)
         if not os.path.exists(path):
             if self._updated or len(self._data_i_dir_map) == 0:
@@ -221,6 +321,14 @@ class Elements(_DataCluster):
 
     @_DataCluster.cluster_closed_decorator(True)
     def write(self, data_i, element, appdir = "", appname = ""):
+        '''
+        parameter
+        ----
+        * data_i: int, the index of the data
+        * element: the element to be written
+        * appdir: str, the sub directory of the root directory
+        * appname: str, the string to be added to the file name(before the suffix)
+        '''
         path = self.path_format(data_i, appdir=appdir, appname=appname)
         dir_ = os.path.split(path)[0]
         os.makedirs(dir_, exist_ok=True)
@@ -228,6 +336,9 @@ class Elements(_DataCluster):
             self.write_func(path, element)
 
     def path_format(self, data_i, appdir = "", appname = ""):
+        '''
+        format the path of data_i
+        '''
         return os.path.join(self.directory, appdir, "{}{}{}".format(str(data_i).rjust(6, "0"), appname, self.suffix))
 
     @_DataCluster.cluster_closed_decorator(True)
@@ -235,15 +346,142 @@ class Elements(_DataCluster):
         '''
         brief
         -----
-        clear all data, defalut to ask before executing
+        clear all data and remove the directory, 
+        defalut to ask before executing
         '''
-        if not ignore_warning:
-            y = input("All files in {} will be deleted, please enter 'y' to confirm".format(self.directory))
-        else:
-            y = 'y'
-        if y == 'y':
+        if super().clear(ignore_warning):
             shutil.rmtree(self.directory)
             os.makedirs(self.directory)
+            return True
+        else:
+            return False
+
+class CacheElements(Elements):
+    '''
+    cache viewmeta as npy
+    ----
+    cache viewmeta as npy to speed up the loading process by about 4 times, \n
+    At the same time, the space occupied by the file will increase by about 600%
+    
+    '''
+    def __init__(self, format_obj: "DatasetFormat", sub_dir, filllen=6, fillchar='0') -> None:
+        super().__init__(format_obj, sub_dir, False, None, None, ".npy", filllen, fillchar)
+        self.read_func = self._read_func
+        self.write_func = self._write_func
+    
+    def _init_attr(self, *args, **kwargs):
+        super()._init_attr(*args, **kwargs)
+        self.read_func = self._read_func
+        self.write_func = self._write_func
+
+    def _get_from_meta(self, meta:dict, name):
+        '''
+        get value from meta dict
+        '''
+        value = meta[name]
+        return value
+
+    def _read_func(self, path):
+        meta = np.load(path,  allow_pickle= True).item()
+        ids         = self._get_from_meta(meta, 'ids')
+        rgb         = self._get_from_meta(meta, 'rgb')
+        depth       = self._get_from_meta(meta, 'depth')
+        mask_dict   = self._decompress_mask(ids, self._get_from_meta(meta, 'cprsd_mask'))
+        extr_vecs   = self._zip_dict(ids, self._get_from_meta(meta, 'extr_vecs'))
+        intr        = self._get_from_meta(meta, 'intr')
+        depth_scale = self._get_from_meta(meta, 'depth_scale')
+        bbox_3d     = self._zip_dict(ids, self._get_from_meta(meta, 'bbox_3d'))
+        landmarks   = self._zip_dict(ids, self._get_from_meta(meta, 'landmarks'))
+        visib_fract = self._zip_dict(ids, self._get_from_meta(meta, 'visib_fract'))
+
+        viewmeta = ViewMeta(rgb, depth, mask_dict, extr_vecs, intr, depth_scale, bbox_3d, landmarks, visib_fract)
+        return viewmeta
+
+    def _write_func(self, path, viewmeta:ViewMeta):
+        rgb = viewmeta.rgb
+        depth = viewmeta.depth
+        masks = viewmeta.masks
+        ids, cprsd_mask = self._compress_mask(masks)
+        ids, extr_vecs = self._split_dict(viewmeta.extr_vecs)
+        intr = viewmeta.intr
+        depth_scale = viewmeta.depth_scale
+        ids, bbox_3d = self._split_dict(viewmeta.bbox_3d)
+        ids, landmarks = self._split_dict(viewmeta.landmarks)
+        ids, visib_fract = self._split_dict(viewmeta.visib_fract)
+        np.save(path, 
+                 {"ids":ids, 
+                 "rgb":rgb, 
+                 "depth":depth, 
+                 "cprsd_mask":cprsd_mask, 
+                 "extr_vecs":extr_vecs, "intr":intr, 
+                 "depth_scale":depth_scale, "bbox_3d":bbox_3d, 
+                 "landmarks":landmarks, "visib_fract":visib_fract})
+        
+    @staticmethod
+    def _zip_dict(ids:np.ndarray, array:np.ndarray) -> dict[int, np.ndarray]:
+        '''
+        generate a dict from ids and array
+        '''
+        if array is None:
+            return None
+        dict_ = dict(zip(ids, array))
+        return dict_
+
+    @staticmethod
+    def _split_dict(dict_:dict[int, np.ndarray]):
+        '''
+        split a dict into ids and array
+        '''
+        if dict_ is None:
+            return None, None
+        return np.array(list(dict_.keys())), np.array(list(dict_.values()))
+
+    @staticmethod
+    def _compress_mask(mask_dict: dict[int, np.ndarray]):
+        '''
+        compress mask dict into ids and cprsd_mask \n
+        a serial of mask will be compressed into a single array by bit operation
+        '''
+        if mask_dict is None:
+            return None
+        length = len(mask_dict)
+        if length <= 8:
+            dtype = np.uint8
+        elif length <= 16:
+            dtype = np.uint16
+        elif length <= 32:
+            dtype = np.uint32
+        elif length <= 64:
+            dtype = np.uint64
+        elif length <= 128:
+            dtype = np.uint128
+        else:
+            dtype = np.uint256
+        mask_list = np.array(list(mask_dict.values()))
+        mask_list = mask_list & 1
+        maks_ids = np.array(list(mask_dict.keys()))
+        cprsd_mask = np.zeros((mask_list[0].shape[0], mask_list[0].shape[1]), dtype=dtype)
+        for shift, m in enumerate(mask_list):
+            m = m << shift        
+            cprsd_mask = np.bitwise_or(cprsd_mask, m)    
+        return maks_ids, cprsd_mask
+
+    @staticmethod
+    def _decompress_mask(ids:np.ndarray, masks:np.ndarray):
+        '''
+        decompress ids and cprsd_mask into mask dict \n
+        a single array will be decompressed into a serial of mask by bit operation
+        '''
+        if masks is None:
+            return None
+        mask_dict = {}
+        for i, id in enumerate(ids):
+            mask_dict[id] = (masks & (1 << i)).astype(np.bool8)
+        return mask_dict
+
+class DatasetFormatMode(enumerate):
+    NORMAL = 0
+    ONLY_CACHE = 1
 
 class DatasetFormat(ABC):
     '''
@@ -317,46 +555,36 @@ class DatasetFormat(ABC):
         def mark_file(directory):
             return os.path.join(directory, ".dfsw")
     
-    def __init__(self, directory, clear_incomplete = False) -> None:
+    def __init__(self, directory, clear_incomplete = False, init_mode = DatasetFormatMode.NORMAL) -> None:
         self.directory:str = directory
-        self.incomplete = os.path.exists(self._Writer.mark_file(self.directory))
-        if self.incomplete:
-            if clear_incomplete:
-                pass
-            else:
-                tip = "the dataset is incomplete, if you want to clear all data, input 'y', else the program will exit: "
-                print("="*len(tip), '\n', tip, '\n', "="*len(tip))
-                y = input()
-                if y != 'y':
-                    raise ValueError("the dataset is incomplete")
-        self.writer:DatasetFormat._Writer = None       
-        self.cover_write = True  
-        self.stream_dumping_json = True
+        if not init_mode == DatasetFormatMode.ONLY_CACHE:
+            self.incomplete = os.path.exists(self._Writer.mark_file(self.directory))
+            if self.incomplete:
+                if clear_incomplete:
+                    pass
+                else:
+                    tip = "the dataset is incomplete, if you want to clear all data, input 'y', else the program will exit: "
+                    print("="*len(tip), '\n', tip, '\n', "="*len(tip))
+                    y = input()
+                    if y != 'y':
+                        raise ValueError("the dataset is incomplete")
+            self.writer:DatasetFormat._Writer = None       
+            self.cover_write = True  
+            self.stream_dumping_json = True
 
-        self.base_json:dict[str, BaseJsonDict] = {}
-        self.elements:dict[str, Elements] = {}
-        self._streams:dict[str, JsonIO.Stream] = {}
+            self.base_json:dict[str, BaseJsonDict] = {}
+            self.elements:dict[str, Elements] = {}
+            self._streams:dict[str, JsonIO.Stream] = {}
 
-        self._init_clusters()
+            self._init_clusters()
 
-        self.data_num = len(self.scene_trans_vector_info)
+            self._updata_data_num()
 
-        if self.incomplete:
-            os.remove(self._Writer.mark_file(self.directory))
-            self.incomplete = False
-        # def deserialize_viewmeta(path)->ViewMeta:
-        #     return ViewMeta.from_serialize_object(deserialize_object(path))
-        
-        # def serialize_viewmeta(path, viewmeta:ViewMeta):
-        #     se = viewmeta.serialize()
-        #     serialize_object(path, se)
+            if self.incomplete:
+                os.remove(self._Writer.mark_file(self.directory))
+                self.incomplete = False
+        self.cache_elements = CacheElements(self, "cache")
 
-        # self.serialized_element = Elements(self, 
-        #                                     "serialized", 
-        #                                     deserialize_viewmeta, 
-        #                                     serialize_viewmeta,
-        #                                     '.pkl')
-        # self.serialized_element.close()
 
     def _init_clusters(self):
         self.scene_camera_info          = BaseJsonDict(self, "scene_camera.json")
@@ -364,20 +592,6 @@ class DatasetFormat(ABC):
         self.scene_bbox_3d_info         = BaseJsonDict(self, 'scene_bbox_3d.json')   
         self.scene_landmarks_info       = BaseJsonDict(self, 'scene_landmarks.json')   
         self.scene_trans_vector_info    = BaseJsonDict(self, 'scene_trans_vector.json')
-
-    # def _load_basejson(self, file):
-    #     '''
-    #     load and bind
-    #     '''
-    #     if os.path.exists(file):
-    #         value = BaseJsonDict(self, JsonIO.load_json(file))
-    #     else:
-    #         value = BaseJsonDict(self, {})
-    #     if file not in self.base_json:
-    #         self.base_json.update({file: value})
-    #     else:
-    #         self.base_json[file].update(value)
-    #     return value
 
     def read_from_disk(self):
         '''
@@ -543,7 +757,6 @@ class DatasetFormat(ABC):
         for obj in list(self.elements.values()) + list(self.base_json.values()):
             obj.set_read_only(value)
 
-
 class LinemodFormat(DatasetFormat):
     KW_GT_R = "cam_R_m2c"
     KW_GT_t = "cam_t_m2c"
@@ -570,9 +783,18 @@ class LinemodFormat(DatasetFormat):
 
     def _init_clusters(self):
         super()._init_clusters()
-        self.rgb_elements   = Elements(self,      "rgb",      cv2.imread,                                    cv2.imwrite, '.png')
-        self.depth_elements = Elements(self,      "depth",    lambda x:cv2.imread(x, cv2.IMREAD_ANYDEPTH),   cv2.imwrite, '.png')
-        self.masks_elements = self._MasksElements(self, "mask",     lambda x:cv2.imread(x, cv2.IMREAD_GRAYSCALE),  cv2.imwrite, '.png')
+        self.rgb_elements   = Elements(self,      "rgb",
+                                       read_func=cv2.imread,                                    
+                                       write_func=cv2.imwrite, 
+                                       suffix='.png')
+        self.depth_elements = Elements(self,      "depth",    
+                                       read_func=lambda x:cv2.imread(x, cv2.IMREAD_ANYDEPTH),   
+                                       write_func=cv2.imwrite, 
+                                       suffix='.png')
+        self.masks_elements = self._MasksElements(self, "mask",     
+                                                  read_func=lambda x:cv2.imread(x, cv2.IMREAD_GRAYSCALE),  
+                                                  write_func=cv2.imwrite, 
+                                                  suffix='.png')
 
         self.scene_gt_info              = BaseJsonDict(self, "scene_gt.json")
 
@@ -638,15 +860,34 @@ class VocFormat(DatasetFormat):
 
     def _init_clusters(self):
         super()._init_clusters()
-        self.images_elements     = Elements(self, "images",       cv2.imread, cv2.imwrite,                ".jpg")
-        self.depth_elements      = Elements(self, "depths",       lambda x:cv2.imread(x, cv2.IMREAD_ANYDEPTH), cv2.imwrite, '.png')
-        self.masks_elements      = Elements(self, "masks",        lambda x: deserialize_image_container(deserialize_object(x), cv2.IMREAD_GRAYSCALE),
-                                                                        lambda path, x: serialize_object(path, serialize_image_container(x)),  
-                                                                        ".pkl")
-        self.labels_elements     = Elements(self, "labels",       self.loadtxt_func((-1, 5)), self.savetxt_func("%8.4f"), ".txt")
-        self.bbox_3ds_elements   = Elements(self, "bbox_3ds",     self.loadtxt_func((-1, 8, 2)), self.savetxt_func("%12.6f"), ".txt")   
-        self.landmarks_elements  = Elements(self, "landmarks",    self.loadtxt_func((-1, 24, 2)), self.savetxt_func("%12.6f"), ".txt")
-        self.extr_vecs_elements  = Elements(self, "trans_vecs",   self.loadtxt_func((-1, 2, 3)), self.savetxt_func("%12.6f"), ".txt")
+        self.images_elements     = Elements(self, "images",       
+                                            read_func=cv2.imread, 
+                                            write_func=cv2.imwrite,
+                                            suffix = ".jpg")
+        self.depth_elements      = Elements(self, "depths",       
+                                            read_func=lambda x:cv2.imread(x, cv2.IMREAD_ANYDEPTH), 
+                                            write_func=cv2.imwrite, 
+                                            suffix = '.png')
+        self.masks_elements      = Elements(self, "masks",        
+                                            read_func=lambda x: deserialize_image_container(deserialize_object(x), cv2.IMREAD_GRAYSCALE),
+                                            write_func=lambda path, x: serialize_object(path, serialize_image_container(x)),  
+                                            suffix = ".pkl")
+        self.labels_elements     = Elements(self, "labels",       
+                                            read_func=self.loadtxt_func((-1, 5)), 
+                                            write_func=self.savetxt_func("%8.4f"), 
+                                            suffix=".txt")
+        self.bbox_3ds_elements   = Elements(self, "bbox_3ds",     
+                                            read_func=self.loadtxt_func((-1, 8, 2)), 
+                                            write_func=self.savetxt_func("%12.6f"), 
+                                            suffix=".txt")   
+        self.landmarks_elements  = Elements(self, "landmarks",    
+                                            read_func=self.loadtxt_func((-1, 24, 2)), 
+                                            write_func=self.savetxt_func("%12.6f"), 
+                                            suffix=".txt")
+        self.extr_vecs_elements  = Elements(self, "trans_vecs",   
+                                            read_func=self.loadtxt_func((-1, 2, 3)), 
+                                            write_func=self.savetxt_func("%12.6f"), 
+                                            suffix=".txt")
 
 
     @staticmethod
@@ -709,7 +950,7 @@ class VocFormat(DatasetFormat):
         y1 = cy - h/2
         y2 = cy + h/2
 
-        new_bbox_2d = np.array([x1, y1, x2, y2]).astype(np.int32)
+        new_bbox_2d = np.around(np.array([x1, y1, x2, y2])).astype(np.int32)
         return new_bbox_2d
 
     def write_element(self, viewmeta: ViewMeta, data_i: int):
@@ -811,9 +1052,10 @@ class _LinemodFormat_sub1(LinemodFormat):
 
     def __init__(self, directory, clear = False) -> None:
         super().__init__(directory, clear)
-        self.rgb_elements   = Elements(self, "rgb",      cv2.imread,                                    cv2.imwrite, '.jpg')
-
-        self.scene_landmarks_info
+        self.rgb_elements   = Elements(self, "rgb", 
+                                       read_func=cv2.imread,  
+                                       write_func=cv2.imwrite, 
+                                       suffix='.jpg')
 
     def read_one(self, data_i):
         viewmeta = super().read_one(data_i)
@@ -825,7 +1067,6 @@ class _LinemodFormat_sub1(LinemodFormat):
         viewmeta.depth_scale *= 1000
 
         return viewmeta
-
 
 def serialize_object(file_path, obj:dict):
     # if os.path.splitext(file_path)[1] == '.pkl':
@@ -839,18 +1080,3 @@ def deserialize_object(serialized_file_path):
     with open(serialized_file_path, 'rb') as file:
         elements = pickle.load(file)
         return elements
-    # if os.path.splitext(serialized_file_path)[1] == '.pkl':
-    #     with open(serialized_file_path, 'rb') as file:
-    #         elements = pickle.load(file)
-    #         return elements
-    # else:
-    #     elements = dict(np.load(serialized_file_path, allow_pickle=True))
-        
-    #     # restored_elements = {}
-    #     for key in elements:
-    #         if not np.issubdtype(elements[key].dtype, np.number):
-    #             elements[key] = elements[key].item()
-    #     return elements
-    # with open(serialized_file_path, 'rb') as file:
-    #     elements = pickle.load(file)
-    #     return elements
