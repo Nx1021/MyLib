@@ -28,7 +28,7 @@ SINGLE_BASE_FRAME_ARUCO_NUM = 3
 STOP_COLOR_THRESHOLD = 30
 STOP_BLACK_TIME = 3
 
-from .. import RGB_DIR, DEPTH_DIR, CALI_INTR_FILE, DATA_INTR_FILE, FRAMETYPE_DATA
+from . import RGB_DIR, DEPTH_DIR, CALI_INTR_FILE, DATA_INTR_FILE, FRAMETYPE_DATA
 import pyrealsense2 as rs
 import json
 import logging
@@ -42,20 +42,9 @@ import shutil
 import sys
 import matplotlib.pyplot as plt
 
-from utils.compute_gt_poses import *
+from aruco_detector import ArucoDetector
+from data_recoder import Recorder
 # from config.DataAcquisitionParameters import DEPTH_THRESH
-
-def make_directories(folder):
-    try:
-        shutil.rmtree(os.path.join(folder, RGB_DIR))
-    except:
-        pass
-    try:
-        shutil.rmtree(os.path.join(folder, DEPTH_DIR))
-    except:
-        pass
-    os.makedirs(os.path.join(folder, RGB_DIR))
-    os.makedirs(os.path.join(folder, DEPTH_DIR))
 
 class Motion():
     def __init__(self, sensor) -> None:
@@ -229,8 +218,6 @@ class Camera():
         # 将深度单位设置为毫米
         self.depth_sensor.set_option(rs.option.depth_units, 0.0005)
 
-        
-
         # 配置深度流和彩色流
         self.mode = mode
         if mode == Camera.MODE_DATA:
@@ -335,16 +322,9 @@ class Camera():
         return color_frame, depth_frame
 
 def get_corner_dict(img: np.ndarray) -> tuple[dict[int, np.ndarray], np.ndarray, bool]:
-    aruco_dictionary = aruco.getPredefinedDictionary(aruco.DICT_6X6_250)
-    gray = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2GRAY)
-    corners, ids, _ = aruco.detectMarkers(gray, aruco_dictionary)
-    aruco_num = len(corners)
-    if aruco_num == 0:
-        return {}, np.zeros((0)), False
-    ids = np.squeeze(ids, axis=-1)
-    corners = np.squeeze(corners, 1)
+    corners, ids, _ = ArucoDetector.detect_aruco_2d(img)
     corner_dict = {id: c for id, c in zip(ids, corners)}
-    return corner_dict, ids, True
+    return corner_dict, ids, len(ids) > 0
 
 def multiframe_distortion_correction(color_list: list[np.ndarray], image_size) -> np.ndarray:
     '''
@@ -354,7 +334,7 @@ def multiframe_distortion_correction(color_list: list[np.ndarray], image_size) -
     '''
     if len(color_list) > 1:
         all_ids = []
-        all_corners = []
+        all_corners:list[dict[int, np.ndarray]] = []
         for num, img in enumerate(color_list):
             if num > 20:
                 continue
@@ -368,7 +348,7 @@ def multiframe_distortion_correction(color_list: list[np.ndarray], image_size) -
             common_ids = np.intersect1d(common_ids, all_ids[i])
         common_corners = []
         for cor_dict in all_corners:
-            corners = GtPostureComputer.get_arucos_from_dict(cor_dict, common_ids)
+            corners = [cor_dict[id_] for id_ in common_ids]
             common_corners.append(corners)
 
         ### 计算变换矩阵
@@ -398,11 +378,11 @@ def multiframe_distortion_correction(color_list: list[np.ndarray], image_size) -
     return median_color
 
 class RecordingPipeline():
-    def __init__(self, directory, data_recorder:Recorder, rs_camera:Camera, gt_posture_computer:GtPostureComputer) -> None:
+    def __init__(self, directory, data_recorder:Recorder, rs_camera:Camera, aruco_detector:ArucoDetector) -> None:
         self.directory = directory
         self.data_recorder = data_recorder
         self.rs_camera = rs_camera
-        self.gt_posture_computer = gt_posture_computer
+        self.aruco_detector = aruco_detector
         self.H, self.W = self.rs_camera.camera_parameters["height"], self.rs_camera.camera_parameters["width"]
         self.trans_mat_list = []
         self.record_pos_list = []
@@ -410,10 +390,10 @@ class RecordingPipeline():
         self.color_image_list    = [] # 色彩图缓存队列
         self.depth_frame_list    = [] # 深度图缓存队列
         self.aruco_dict_list     = [] # 交点队列
-        self.this_color = None
-        self.this_depth_frame = None
-        self.this_floor_aruco_dict = None
-        self.this_other_aruco_dict = None
+        self.this_color:np.ndarray = None
+        self.this_depth_frame:np.ndarray = None
+        self.this_floor_aruco_dict:dict[int, np.ndarray] = None
+        self.this_other_aruco_dict:dict[int, np.ndarray] = None
 
         self.keep_at_last_position = True #是否已经离开上一位置，用于防止在同一位置连续采集
         self.record_pos_list_updated = True
@@ -434,18 +414,12 @@ class RecordingPipeline():
         self.ignore_stable = False
 
     def read_trans_mats(self):
-        # 获取变换矩阵文件夹和模型索引范围
-        trans_dir = self.data_recorder.trans_dir
-        obj_range = self.data_recorder.current_model_index_range
+        self.data_recorder.trans_elements.read()
         # 清空变换矩阵列表和记录位置列表
         self.trans_mat_list.clear()
         self.record_pos_list.clear()
         # 遍历模型索引范围中的每个模型
-        for index in range(*obj_range):
-            # 获取当前模型的变换矩阵文件路径
-            path = os.path.join(trans_dir, str(index).rjust(6, "0") + ".npy")
-            # 加载变换矩阵文件
-            trans_mat = np.load(path)
+        for trans_mat in self.data_recorder.trans_elements:
             # 将变换矩阵添加到变换矩阵列表中
             self.trans_mat_list.append(trans_mat)
             # 将变换矩阵转换为位置点并添加到记录位置列表中
@@ -543,11 +517,11 @@ class RecordingPipeline():
 
     @property
     def this_floor_aruco_corners(self):
-        return GtPostureComputer.get_arucos_from_dict(self.this_floor_aruco_dict)
+        return list(self.this_floor_aruco_dict.values())
 
     @property
     def this_other_aruco_corners(self):
-        return GtPostureComputer.get_arucos_from_dict(self.this_other_aruco_dict)
+        return list(self.this_other_aruco_dict.values())
         
     def visualise(self):
         ### 可视化
@@ -764,16 +738,16 @@ class RecordingPipeline():
             if len(common_ids) < 2:
                 max_delta = 1e6
             else:
-                arcuo_array = np.array([GtPostureComputer.get_arucos_from_dict(d, common_ids) for d in self.aruco_dict_list])
+                arcuo_array = np.array([[d[id_] for id_ in common_ids] for d in self.aruco_dict_list])
                 deltas = arcuo_array - arcuo_array[-1] #[MAX_LENGTH, N, 4, 2]
                 max_delta = np.max(np.linalg.norm(deltas, axis = -1))
                 # print(max_delta)
         except ValueError:
             max_delta = 1e6
         ### 根据采集的内容调整对精度的严格程度
-        if self.data_recorder.current_model_index == 0:
+        if self.data_recorder.categroy_index == 0:
             restrict = 0.85
-        elif self.data_recorder.current_model_index == len(self.data_recorder.std_models_names) - 1:
+        elif self.data_recorder.categroy_index == len(self.data_recorder.std_models_names) - 1:
             restrict = 2.0
         else:
             restrict =  1.0
@@ -786,7 +760,7 @@ class RecordingPipeline():
                 depth_frame = self.rs_camera.temporal.process(df)
             d = np.asanyarray(depth_frame.get_data())
             # 对采集的帧进行误差检验
-            ok, transform = self.gt_posture_computer.verify_frame(c, d, self.rs_camera.camera_parameters)
+            ok, transform = self.aruco_detector.verify_frame(c, d, self.rs_camera.camera_parameters)
             # ok = True
             if ok:
                 self.data_recorder.save_frames(c, d, transform)
@@ -798,67 +772,42 @@ class RecordingPipeline():
                 pass
             self.__clear_buffer()
 
-if __name__ == "__main__":
-    argv = sys.argv
-    argv = ("", "LINEMOD\\{}".format(DATADIR))
-    try:
-        folder = argv[1] +"\\"
-    except:
-        print_usage()
-        exit()
+# if __name__ == "__main__":
 
-    try:
-        os.mkdir(folder)
-    except:
-        pass
-    try:
-        os.mkdir(os.path.join(folder, RGB_DIR))
-    except:
-        pass
-    try:
-        os.mkdir(os.path.join(folder, DEPTH_DIR))
-    except:
-        pass
-    try:
-        os.mkdir(os.path.join(folder, TRANS_DIR))
-    except:
-        pass
+#     is_recording_model = True
+#     record_gate = True
 
+#     def callback_CALI(data_recorder:Recorder):
+#         if data_recorder.categroy_index != FRAMETYPE_DATA:
+#             return False
+#         else:
+#             return True
 
-    is_recording_model = True
-    record_gate = True
+#     def callback_DATA(data_recorder:Recorder):
+#         return False
 
-    def callback_CALI(data_recorder:Recorder):
-        if data_recorder.current_model_name != FRAMETYPE_DATA:
-            return False
-        else:
-            return True
+#     ### 记录器
+#     std_model_path = os.path.join(os.path.abspath(os.path.join(folder, "..")), "models")
+#     data_recorder = Recorder(folder, std_model_path)
+#     start_black_time = 0
+#     ### 相机初始化
+#     rs_camera = Camera(folder, Camera.MODE_CALI)
+#     gt_posture_computer = GtPostureComputer(folder)
 
-    def callback_DATA(data_recorder:Recorder):
-        return False
-
-    ### 记录器
-    std_model_path = os.path.join(os.path.abspath(os.path.join(folder, "..")), "models")
-    data_recorder = Recorder(folder, std_model_path)
-    start_black_time = 0
-    ### 相机初始化
-    rs_camera = Camera(folder, Camera.MODE_CALI)
-    gt_posture_computer = GtPostureComputer(folder)
-
-    record_pipeline = RecordingPipeline(folder, data_recorder, rs_camera, gt_posture_computer)
-    # record_pipeline.data_recorder.delete(list(range(421, 847)))
-    record_pipeline.data_recorder.add_skip_seg(len(record_pipeline.data_recorder.std_models_names) - 1)
+#     record_pipeline = RecordingPipeline(folder, data_recorder, rs_camera, gt_posture_computer)
+#     # record_pipeline.data_recorder.delete(list(range(421, 847)))
+#     record_pipeline.data_recorder.add_skip_seg(len(record_pipeline.data_recorder.std_models_names) - 1)
     
-    for mode, func in zip([Camera.MODE_CALI, Camera.MODE_DATA], [callback_CALI, callback_DATA]):
-        record_pipeline.rs_camera = Camera(folder, mode)
-        record_pipeline.start(func)
+#     for mode, func in zip([Camera.MODE_CALI, Camera.MODE_DATA], [callback_CALI, callback_DATA]):
+#         record_pipeline.rs_camera = Camera(folder, mode)
+#         record_pipeline.start(func)
 
-    # for mode, func in zip([Camera.MODE_DATA], [callback_DATA]):
-    #     BUFFER_MAX_LENGTH = 4        
-    #     record_pipeline.rs_camera = Camera(folder, mode)
-    #     # record_pipeline.ignore_stable = True     
-    #     record_pipeline.data_recorder.skip_to_seg()   
-    #     record_pipeline.start(func)
+#     # for mode, func in zip([Camera.MODE_DATA], [callback_DATA]):
+#     #     BUFFER_MAX_LENGTH = 4        
+#     #     record_pipeline.rs_camera = Camera(folder, mode)
+#     #     # record_pipeline.ignore_stable = True     
+#     #     record_pipeline.data_recorder.skip_to_seg()   
+#     #     record_pipeline.start(func)
 
 
 

@@ -5,15 +5,18 @@ import cv2
 
 from posture_6d.dataset_format import DatasetFormatMode
 from posture_6d.dataset_format import DatasetFormat, Elements
-from .. import RGB_DIR, DEPTH_DIR, TRANS_DIR
+from . import RGB_DIR, DEPTH_DIR, TRANS_DIR
+
+from typing import Generator
 
 class FrameMeta():
-    def __init__(self, trans_mat_Cn2C0, rgb = None, depth = None) -> None:
-        self.trans_mat_Cn2C0 = trans_mat_Cn2C0
-        self.color = rgb
-        self.depth = depth
+    def __init__(self, trans_mat_Cn2C0, rgb = None, depth = None, intr_M = None) -> None:
+        self.trans_mat_Cn2C0:np.ndarray = trans_mat_Cn2C0
+        self.color:np.ndarray = rgb
+        self.depth:np.ndarray = depth
+        self.intr_M:np.ndarray = intr_M
 
-class Recoder(DatasetFormat):
+class Recorder(DatasetFormat):
     def __init__(self, directory, std_models_dir, clear_incomplete=False, init_mode=DatasetFormatMode.NORMAL) -> None:
         super().__init__(directory, clear_incomplete, init_mode)
         self.std_models_dir = std_models_dir
@@ -26,7 +29,20 @@ class Recoder(DatasetFormat):
         self.categroy_index = 0
         self.AddNum = 0 # 当前标准模型已采集的增量帧数
         self.skip_segs = []
+
+        self.category_idx_map = {}
+        self._model_index_range = {}
     
+    @property
+    def model_index_range(self):
+        if self.updated or len(self._model_index_range) == 0:
+            self.__init_category_idx_map()
+            for name in self.std_models_names:
+                self._model_index_range.setdefault(name, [])
+            for data_i, cate_i in self.category_idx_map.items():
+                self._model_index_range.setdefault(self.std_models_names[cate_i], []).append(data_i)
+        return self._model_index_range
+            
     def _init_clusters(self):
         super()._init_clusters()
         self.close_all()
@@ -80,6 +96,18 @@ class Recoder(DatasetFormat):
     def is_all_recorded(self):
         return self.categroy_index >= len(self.std_models_names)
 
+    def __init_category_idx_map(self):
+        if len(self.category_idx_map) == 0 or self.updated:
+            self._updata_data_num()
+            self.rgb_elements.auto_path(0)
+            dir_map = self.rgb_elements._data_i_dir_map
+            for id_, dir_ in dir_map.items():
+                self.category_idx_map[id_] = self.std_models_names.index(os.path.split(dir_)[-1])        
+
+    def get_category_idx(self, data_i):
+        self.__init_category_idx_map()
+        return self.category_idx_map[data_i]
+
     def read_one(self, data_i) -> FrameMeta:
         super().read_one(data_i)
         self.rgb_elements._init_data_i_dir_map()
@@ -91,6 +119,18 @@ class Recoder(DatasetFormat):
         trans = self.trans_elements.read(data_i)
 
         return FrameMeta(trans_mat_Cn2C0=trans, rgb=rgb, depth=depth)
+
+    def read_from_disk(self) -> Generator[FrameMeta]:
+        return super().read_from_disk()
+    
+    def read_in_category_range(self, start, end):
+        valid_category = list(range(len(self.std_models_names)))[start:end]
+        for i in range(self.data_num):
+            category_idx:int = self.get_category_idx(i)
+            if category_idx in valid_category:
+                framemeta:FrameMeta = self.read_one(i)
+                yield category_idx, framemeta
+
 
     def write_element(self, framemeta: FrameMeta, data_i: int):
         appdir = self.std_models_names[self.categroy_index]
