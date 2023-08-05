@@ -57,6 +57,8 @@ class MeshMeta:
             self.ldmk_3d = new_ldmk
             return self
 
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}:{self.name} at {id(self)}"
 
 class MeshManager:
     _instance = None
@@ -408,7 +410,15 @@ class Voxelized():
         return restore_mat
 
     @staticmethod
-    def from_mesh(o3d_mesh, voxel_size):
+    def auto_voxel_size(geometry) -> float:
+        max_bound = geometry.get_max_bound()
+        min_bound = geometry.get_min_bound()
+        return max(max_bound - min_bound) / 30
+
+    @staticmethod
+    def from_mesh(o3d_mesh, voxel_size = None):
+        if voxel_size is None:
+            voxel_size = Voxelized.auto_voxel_size(o3d_mesh)
         ### 进行体素化
         voxel_grid = o3d.geometry.VoxelGrid.create_from_triangle_mesh(o3d_mesh, voxel_size)
         
@@ -420,7 +430,9 @@ class Voxelized():
         return Voxelized(entity, restore_mat, orig_geometry = o3d_mesh)
 
     @staticmethod
-    def from_pcd(o3d_pcd, voxel_size):
+    def from_pcd(o3d_pcd, voxel_size = None):
+        if voxel_size is None:
+            voxel_size = Voxelized.auto_voxel_size(o3d_mesh)
         voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(o3d_pcd, voxel_size=voxel_size)
         
         ###retore_mat

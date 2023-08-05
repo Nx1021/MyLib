@@ -1,8 +1,8 @@
 import os
 from typing import Callable
-from posture_6d.dataset_format import DatasetFormat
-from posture_6d.viewmeta import ViewMeta
-from . import dataset_format, Elements, DatasetFormat, JsonDict
+from . import DatasetFormat
+from . import ViewMeta
+from . import dataset_format, Elements, DatasetFormat, JsonDict, _DataCluster_decorator
 import numpy as np
 import open3d as o3d
 from typing import Union
