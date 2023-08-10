@@ -472,6 +472,35 @@ class JsonDict(_DataCluster, dict, WriteController):
             pass
         dict.clear(self)
 
+    def __len__(self) -> int:
+        super().__len__()
+        return dict.__len__(self)
+
+    def keys(self) -> dict_keys:
+        super().keys()
+        return dict.keys(self)
+
+    def values(self):
+        super().values()
+        return dict.values(self)
+    
+    def items(self):
+        super().items()
+        return dict.items(self)
+    
+    def _read(self, data_i, *arg, **kwargs):
+        super()._read(data_i, *arg, **kwargs)
+        return dict.__getitem__(self, data_i)
+
+    def _write(self, data_i, value, *arg, **kwargs):
+        super()._write(data_i, value, *arg, **kwargs)
+        return dict.__setitem__(self, data_i, value)
+
+    def _clear(self, *arg, **kwargs):
+        with open(self.directory, 'w'):
+            pass
+        dict.clear(self)
+
     def _init_attr(self, *args, **kwargs):
         _DataCluster._init_attr(self, *args, **kwargs)
         self.reload()

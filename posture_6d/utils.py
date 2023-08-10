@@ -9,6 +9,9 @@ import time
 import io
 import re
 import warnings
+import io
+import re
+import warnings
 
 def get_bbox_connections(bbox_3d_proj:np.ndarray):
     '''
@@ -115,6 +118,7 @@ class JsonIO():
             return json_repr
 
     class Stream():
+        def __init__(self, path, open = False, buffer_length = 100000) -> None:
         def __init__(self, path, open = False, buffer_length = 100000) -> None:
             self.path = path
             self.buffer = ""
