@@ -13,32 +13,7 @@ import io
 import re
 import warnings
 
-def get_bbox_connections(bbox_3d_proj:np.ndarray):
-    '''
-    bbox_3d_proj: [..., B, (x,y)]
-    return
-    -----
-    lines: [..., ((x1,x2), (y1,y2)), 12]
-    '''
-    b = bbox_3d_proj
-    lines = [
-    ([b[...,0,0], b[...,1,0]], [b[...,0,1], b[...,1,1]]),
-    ([b[...,0,0], b[...,6,0]], [b[...,0,1], b[...,6,1]]),
-    ([b[...,6,0], b[...,7,0]], [b[...,6,1], b[...,7,1]]),
-    ([b[...,1,0], b[...,7,0]], [b[...,1,1], b[...,7,1]]),
 
-    ([b[...,2,0], b[...,3,0]], [b[...,2,1], b[...,3,1]]),
-    ([b[...,2,0], b[...,4,0]], [b[...,2,1], b[...,4,1]]),
-    ([b[...,4,0], b[...,5,0]], [b[...,4,1], b[...,5,1]]),
-    ([b[...,3,0], b[...,5,0]], [b[...,3,1], b[...,5,1]]),
-
-    ([b[...,0,0], b[...,2,0]], [b[...,0,1], b[...,2,1]]),
-    ([b[...,1,0], b[...,3,0]], [b[...,1,1], b[...,3,1]]),
-    ([b[...,7,0], b[...,5,0]], [b[...,7,1], b[...,5,1]]),
-    ([b[...,6,0], b[...,4,0]], [b[...,6,1], b[...,4,1]]),
-    ]
-    lines = np.stack(lines)
-    return lines #[12, ..., ((x1,x2), (y1,y2))]
 
 def modify_class_id(dict_list:list[dict[int, Any]], modify_class_id_pairs:list[tuple[int]]):
     orig_keys = [x[0] for x in modify_class_id_pairs]
@@ -69,7 +44,7 @@ def extract_doc(doc:str, title:str):
     return sub_doc
 
 
-def _ignore_warning(func, category = Warning):
+def _ignore_warning_decorator(func, category = Warning):
     def warpper(*args, **kwargs):
         warnings.filterwarnings("ignore", category=category) # do not show warning of image size
         rlt = func(*args, **kwargs)
@@ -118,7 +93,6 @@ class JsonIO():
             return json_repr
 
     class Stream():
-        def __init__(self, path, open = False, buffer_length = 100000) -> None:
         def __init__(self, path, open = False, buffer_length = 100000) -> None:
             self.path = path
             self.buffer = ""

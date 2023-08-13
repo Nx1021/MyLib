@@ -1,4 +1,4 @@
-from MyLib.posture_6d.dataset_format import DatasetFormat
+from posture_6d.data.dataset_format import DatasetFormat, DST, ClusterNotRecommendWarning
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -18,53 +18,7 @@ class FrameMeta():
         self.depth:np.ndarray = depth
         self.intr_M:np.ndarray = intr_M
 
-class EnumElements(Elements):
-    def __init__(self, format_obj: "ModelManager", sub_dir, register=True, read_func = ..., write_func = ..., suffix: str = '.txt', filllen=6, fillchar='0') -> None:
-        super().__init__(format_obj, sub_dir, register, read_func, write_func, suffix, filllen, fillchar)
-        self.format_obj:ModelManager = format_obj    
-
-    @property
-    def enums(self):
-        return self.format_obj.std_meshes_names
-
-    def read(self, data_i, appdir="", appname="", **kw):
-        ''''
-        data_i: int or str
-        appdir: str
-        appname: str(unused in this function)
-        '''
-        return super().read(data_i, appdir, appname, **kw)
-    
-    def write(self, data_i, element, appdir="", appname="", **kw):
-        '''
-        data_i: int or str
-        element: Object
-        appdir: str
-        appname: str(unused in this function)
-        '''
-        return super().write(data_i, element, appdir, appname, **kw)
-
-    def format_path(self, enum:Union[str, int], appdir="", appname="", **kw):
-        if not appname:
-            if isinstance(enum, int):
-                appname = self.dulmap_id_name(enum)
-                data_i = enum
-            elif isinstance(enum, str):
-                # get key by value
-                appname = enum
-                data_i = self.dulmap_id_name(enum)
-        else:
-            assert isinstance(enum, int), "enum must be int when appname is not empty"
-            data_i = enum
-        return super().format_path(data_i, appdir, appname, **kw)
-    
-    def dulmap_id_name(self, enum:Union[str, int]):
-        if isinstance(enum, int):
-            return self.enums[enum]
-        elif isinstance(enum, str):
-            return self.enums.index(enum)
-
-class CommonData(DatasetFormat):
+class CommonData(DatasetFormat[DST]):
     def __init__(self, directory, clear_incomplete=False, init_mode=DatasetFormatMode.NORMAL) -> None:
         super().__init__(directory, clear_incomplete, init_mode)
 
@@ -100,24 +54,36 @@ class CommonData(DatasetFormat):
                                                                             JsonIO.load_json, 
                                                                             JsonIO.dump_json))
 
-class ElementsWithCategory(Elements):
-    def __init__(self, format_obj: DatasetFormat, sub_dir, register=True, read_func: Callable[..., Any] = ..., write_func: Callable[..., Any] = ..., suffix: str = '.txt', filllen=6, fillchar='0') -> None:
-        super().__init__(format_obj, sub_dir, register, read_func, write_func, suffix, filllen, fillchar)
-        self.format_obj:DataRecorder = format_obj
+class EnumElements(Elements[CommonData, Any]):
+    # def __init__(self, format_obj: "ModelManager", sub_dir, register=True, read_func = ..., write_func = ..., suffix: str = '.txt', filllen=6, fillchar='0') -> None:
+    #     super().__init__(format_obj, sub_dir, register, read_func, write_func, suffix, filllen, fillchar)
+    #     self.format_obj:ModelManager = format_obj    
 
     @property
-    def current_category_range(self):
-        return self.format_obj.category_idx_range[self.format_obj.current_category_name]
+    def enums(self):
+        return self.format_obj.std_meshes_names
 
-    def in_current_category(self):
-        try:
-            _range = self.current_category_range
-        except:
-            _range = [] 
-        for data_i in _range:
-            yield self.read(data_i)
+    def format_path(self, enum:Union[str, int], appdir="", appname="", **kw):
+        if not appname:
+            if isinstance(enum, int):
+                appname = self.dulmap_id_name(enum)
+                data_i = enum
+            elif isinstance(enum, str):
+                # get key by value
+                appname = enum
+                data_i = self.dulmap_id_name(enum)
+        else:
+            assert isinstance(enum, int), "enum must be int when appname is not empty"
+            data_i = enum
+        return super().format_path(data_i, appdir, appname, **kw)
+    
+    def dulmap_id_name(self, enum:Union[str, int]):
+        if isinstance(enum, int):
+            return self.enums[enum]
+        elif isinstance(enum, str):
+            return self.enums.index(enum)
 
-class DataRecorder(CommonData):    
+class DataRecorder(CommonData[FrameMeta]):    
     @property
     def category_idx_range(self):
         return self._category_idx_range
@@ -273,49 +239,18 @@ class DataRecorder(CommonData):
         #     with open(self.directory+'category_idx_range.json', 'w') as fp:
         #         json.dump(self.model_index_dict, fp)
 
-class ProcessData(JsonDict):
+class ElementsWithCategory(Elements[DataRecorder, np.ndarray]):
+    @property
+    def current_category_range(self):
+        return self.format_obj.category_idx_range[self.format_obj.current_category_name]
 
-    ARUCO_USED_TIMES = "aruco_used_times"
-    ARUCO_CENTERS = "aruco_centers"
-    PLANE_EQUATION = "plane_equation"
-    TRANS_MAT_C0_2_SCS = "trans_mat_C0_2_SCS"
-    VOR_POLYS_COORD = "vor_polys_coord"
-    FLOOR_COLOR = "floor_color"
-
-    def __init__(self, format_obj: DatasetFormat, sub_dir: str = "process_data.json", register=False) -> None:
-        super().__init__(format_obj, sub_dir, register)
-
-    def check_key(self, key):
-        if key not in vars(ProcessData).values() or callable(key):
-            raise ValueError("key must be one of the class variables")
-
-    def __setitem__(self, key, value):
-        self.check_key(key)
-        return super().__setitem__(key, value)
-
-    def update(self, *arg, **kw):
-        self.check_key(key)
-        return super().update(*arg, **kw)
-    
-    def __getitem__(self, key):
-        self.check_key(key)
-        return super().__getitem__(key)
-
-    # def __init__(self, directory) -> None:
-    #     self.directory = directory
-    #     self.process_file = os.path.join(self.directory, "pcd_creator_process_data.json")
-    #     self.load_process_data()
-
-    # def load_process_data(self):
-    #     self.process_data = JsonDict()
-    #     if not os.path.exists(self.process_file):
-    #         self.process_data = {}
-    #         JsonIO.dump_json(self.process_file, self.process_data)
-    #         return
-    #     self.process_data = JsonIO.load_json(self.process_file)
-
-    # def dump_process_data(self):
-    #     JsonIO.dump_json(self.process_file, self.process_data)
+    def in_current_category(self):
+        try:
+            _range = self.current_category_range
+        except:
+            _range = [] 
+        for data_i in _range:
+            yield self.read(data_i)
 
 class ModelManager(CommonData):
 
@@ -340,18 +275,18 @@ class ModelManager(CommonData):
                                         read_func=o3d.io.read_triangle_mesh,
                                         write_func=o3d.io.write_triangle_mesh,
                                         suffix='.ply')
-        self.icp_trans = EnumElements(self, "icp_trans", 
-                                  read_func=np.load,
-                                  write_func=np.save,
-                                  suffix='.npy')
+        self.icp_trans      = EnumElements(self, "icp_trans", 
+                                        read_func=np.load,
+                                        write_func=np.save,
+                                        suffix='.npy')
         self.icp_std_mesh = EnumElements(self, "icp_std_mesh",
-                                     read_func = o3d.io.read_triangle_mesh,
-                                     write_func= o3d.io.write_triangle_mesh,
-                                     suffix='.ply')
+                                        read_func = o3d.io.read_triangle_mesh,
+                                        write_func= o3d.io.write_triangle_mesh,
+                                        suffix='.ply')
         self.icp_unf_pcd = EnumElements(self, "icp_unf_pcd",
-                                    read_func=o3d.io.read_point_cloud,
-                                    write_func=o3d.io.write_point_cloud,
-                                    suffix='.ply')        
+                                        read_func=o3d.io.read_point_cloud,
+                                        write_func=o3d.io.write_point_cloud,
+                                        suffix='.ply')        
         
         self.merged_regist_pcd_file = FileCluster(self, "", FileCluster.SingleFile("merged.ply",
                                                                                    read_func = o3d.io.read_point_cloud,
@@ -360,10 +295,43 @@ class ModelManager(CommonData):
         self.process_data = ProcessData(self, register = False)
     
     def read_one(self, data_i, appdir="", appname="") -> ViewMeta:
-        warn("the file might be too large to read, only the paths are returned")
+        warn("the file might be too large to read, only the paths are returned", ClusterNotRecommendWarning)
         return self.get_element_paths_of_one(data_i, appdir, appname)
     
-    def _write_elements(self, data_i: int, obj, appdir="", appname=""):
-        warn("please write by the elements")
-        return None
-    
+    def write_one(self, data_i, data: Any, *arg, **kwargs):
+        warn("can not write", ClusterNotRecommendWarning)
+
+class ProcessData(JsonDict[ModelManager, dict[str, np.ndarray]]):
+
+    ARUCO_USED_TIMES = "aruco_used_times"
+    ARUCO_CENTERS = "aruco_centers"
+    PLANE_EQUATION = "plane_equation"
+    TRANS_MAT_C0_2_SCS = "trans_mat_C0_2_SCS"
+    VOR_POLYS_COORD = "vor_polys_coord"
+    FLOOR_COLOR = "floor_color"
+
+    def __init__(self, format_obj: DatasetFormat, sub_dir: str = "process_data.json", register=False) -> None:
+        super().__init__(format_obj, sub_dir, register)
+
+    def check_key(self, key):
+        super().check_key(key)
+        if key not in vars(ProcessData).values() or callable(key):
+            return False
+        else:
+            return True
+        
+    # def __init__(self, directory) -> None:
+    #     self.directory = directory
+    #     self.process_file = os.path.join(self.directory, "pcd_creator_process_data.json")
+    #     self.load_process_data()
+
+    # def load_process_data(self):
+    #     self.process_data = JsonDict()
+    #     if not os.path.exists(self.process_file):
+    #         self.process_data = {}
+    #         JsonIO.dump_json(self.process_file, self.process_data)
+    #         return
+    #     self.process_data = JsonIO.load_json(self.process_file)
+
+    # def dump_process_data(self):
+    #     JsonIO.dump_json(self.process_file, self.process_data)
