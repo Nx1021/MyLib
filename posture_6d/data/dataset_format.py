@@ -176,9 +176,9 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         self.directory = os.path.join(format_obj.directory, self.sub_dir)  # Directory path for the cluster.
         self._data_i_upper = 0  
 
-        self.__cluster_read_func:Callable =  self._read_decorator(self._read)
-        self.__cluster_write_func:Callable = self._write_decorator(self._write)
-        self.__cluster_clear_func:Callable = self._write_decorator(self._clear) 
+        self.__cluster_read_func:Callable =  self._read_decorator(self.__class__._read)
+        self.__cluster_write_func:Callable = self._write_decorator(self.__class__._write)
+        self.__cluster_clear_func:Callable = self._write_decorator(self.__class__._clear) 
 
         self._init_attr(*args, **kwargs)  # Initializes additional attributes specified by subclasses.
      
@@ -266,7 +266,7 @@ class _DataCluster(ABC, Generic[FT, DCT]):
     def __iter__(self) -> Iterable[DCT]:
         return self.values()
 
-    def open(self):
+    def _open(self):
         '''Method to open the cluster for operation.'''
         self._closed = False  # Marks the cluster as open for operation.        
         if self._incomplete:
@@ -276,10 +276,22 @@ class _DataCluster(ABC, Generic[FT, DCT]):
             self._incomplete = False
             self.set_read_only(read_only)  # Restores the read-only flag.
 
-    def close(self):
-        '''Method to close the cluster, preventing further operations.'''
+    def _close(self):
         self._changed_since_opening = False  # Resets the updated flag to false.
         self._closed = True  # Marks the cluster as closed.
+
+    def open(self):
+        if self._closed == True:
+            self._open()
+            return True
+        return False
+
+    def close(self):
+        '''Method to close the cluster, preventing further operations.'''
+        if self._closed == False:
+            self._close()
+            return True
+        return False
 
     def is_close(self, with_warning = False):
         '''Method to check if the cluster is closed.'''
@@ -287,6 +299,9 @@ class _DataCluster(ABC, Generic[FT, DCT]):
             warnings.warn(f"{self.__class__.__name__}:{self.sub_dir} is closed, any I/O operation will not be executed.",
                             ClusterIONotExecutedWarning)
         return self._closed
+
+    def is_open(self):
+        return not self.is_close()
 
     def set_read_only(self, read_only=True):
         '''Method to set the cluster as read-only or write-enabled.'''
@@ -302,6 +317,9 @@ class _DataCluster(ABC, Generic[FT, DCT]):
             warnings.warn(f"{self.__class__.__name__}:{self.sub_dir} is read-only, any write operation will not be executed.",
                 ClusterIONotExecutedWarning)
         return self._read_only
+    
+    def is_writeable(self):
+        return not self.is_read_only()
 
     @staticmethod
     def _read_decorator(func):
@@ -320,7 +338,7 @@ class _DataCluster(ABC, Generic[FT, DCT]):
                 if self.is_close(with_warning=True):
                     return None
             try:
-                rlt = func(data_i, *args, **kwargs)  # Calls the original function.
+                rlt = func(self, data_i, *args, **kwargs)  # Calls the original function.
             except ClusterDataNotFoundError:
                 rlt = None
             return rlt
@@ -340,15 +358,17 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         func: Callable, the decorated function
         '''
         def wrapper(self: "_DataCluster", data_i = None, value = None, *args, force = False, **kwargs):
-            if not force:
-                if self.is_close(with_warning=True) or self.is_read_only(with_warning=True):
-                    return None
-                elif not self.allow_overwrite and data_i in self.keys():
-                    warnings.warn(f"{self.__class__.__name__}:{self.sub_dir} \
-                                is not allowed to overwitre, any write operation will not be executed.",
-                                    ClusterIONotExecutedWarning)
-                    return None
-            rlt = func(data_i, value, *args, **kwargs)  # Calls the original function.
+            if force:
+                self.open()
+                self.set_writable()
+            if self.is_close(with_warning=True) or self.is_read_only(with_warning=True):
+                return None
+            elif not self.allow_overwrite and data_i in self.keys() and not force:
+                warnings.warn(f"{self.__class__.__name__}:{self.sub_dir} \
+                            is not allowed to overwitre, any write operation will not be executed.",
+                                ClusterIONotExecutedWarning)
+                return None
+            rlt = func(self, data_i, value, *args, **kwargs)  # Calls the original function.
             self.changed_since_opening = True  # Marks the cluster as updated after writing operations.
             if data_i is None:
                 self._update_cluster_all(*args, **kwargs)
@@ -423,13 +443,13 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
             pass
 
     def __init__(self, format_obj:FT, sub_dir, register = True, *args, **kwargs):
-        super().__init__(format_obj, sub_dir, register, *args, **kwargs)
+        WriteController.__init__(self)           
         dict.__init__(self)
-        WriteController.__init__(self)
+        super().__init__(format_obj, sub_dir, register, *args, **kwargs)
 
     @property
     def save_mode(self):
-        return self._save_mode
+        return self.__save_mode
     
     @save_mode.setter
     def save_mode(self, mode):
@@ -437,9 +457,9 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
         if self.is_writing and mode != self.SAVE_STREAMLY:
             warnings.warn("can't change save_mode from SAVE_STREAMLY to the others while writing streamly", 
                           ClusterParaWarning)
-        if self.save_mode == self.SAVE_AFTER_CLOSE and mode != self.SAVE_IMMIDIATELY:
+        if self.__save_mode == self.SAVE_AFTER_CLOSE and mode != self.SAVE_AFTER_CLOSE and self.is_open():
             self.save()
-        self.save_mode = mode
+        self.__save_mode = mode
 
     @property
     def write_streamly(self):
@@ -469,46 +489,17 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
         super()._write(data_i, value, *arg, **kwargs)
 
         if self.save_mode == self.SAVE_IMMIDIATELY:
-            set_value = value
+            rlt = dict.__setitem__(self, data_i, value)
             self.save()
         elif self.save_mode == self.SAVE_AFTER_CLOSE:
-            set_value = value
+            rlt = dict.__setitem__(self, data_i, value)
         elif self.save_mode == self.SAVE_STREAMLY:
             set_value = self._Placeholder()
             if not self.is_writing:
                 self.start_writing() # auto start writing if save_mode is SAVE_STREAMLY
             self.stream.write({data_i: value})
-        rlt = dict.__setitem__(self, data_i, set_value)
+            rlt = dict.__setitem__(self, data_i, set_value)
         return rlt
-
-    def _clear(self, *arg, **kwargs):
-        with open(self.directory, 'w'):
-            pass
-        dict.clear(self)
-
-    def __len__(self) -> int:
-        super().__len__()
-        return dict.__len__(self)
-
-    def keys(self) -> dict_keys:
-        super().keys()
-        return dict.keys(self)
-
-    def values(self):
-        super().values()
-        return dict.values(self)
-    
-    def items(self):
-        super().items()
-        return dict.items(self)
-    
-    def _read(self, data_i, *arg, **kwargs):
-        super()._read(data_i, *arg, **kwargs)
-        return dict.__getitem__(self, data_i)
-
-    def _write(self, data_i, value, *arg, **kwargs):
-        super()._write(data_i, value, *arg, **kwargs)
-        return dict.__setitem__(self, data_i, value)
 
     def _clear(self, *arg, **kwargs):
         with open(self.directory, 'w'):
@@ -518,13 +509,13 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
     def _init_attr(self, *args, **kwargs):
         _DataCluster._init_attr(self, *args, **kwargs)
         self.reload()
-        self._save_mode = self.SAVE_AFTER_CLOSE
+        self.__save_mode = self.SAVE_AFTER_CLOSE
         self.stream = JsonIO.Stream(self.directory)
 
     def __iter__(self) -> Iterator:
         return _DataCluster.__iter__(self)
 
-    def close(self):
+    def _close(self):
         '''
         rewrite the method of WriteController
         '''
@@ -533,7 +524,7 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
         if self.save_mode == self.SAVE_AFTER_CLOSE:
             self.sort()
             self.save()
-        super().close()
+        super()._close()
 
     def update(self, _m:Union[dict, Iterable[tuple]] = None, **kw):
         if _m is None:
@@ -568,7 +559,7 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
         dict.update(self, value)
 
     @_DataCluster._write_decorator
-    def sort(self):
+    def sort(self, *arg, **kwargs):
         '''
         sort by keys
         '''
@@ -765,18 +756,18 @@ class Elements(_DataCluster[FT, DCT]):
         self.data_i_dir_map
         return self.values()
     
-    def open(self):
+    def _open(self):
         if not os.path.exists(self.directory):
             print(f"Elements: {self.directory} is new, it will be created")
             os.makedirs(self.directory, exist_ok=True)
-        return super().open()
+        return super()._open()
 
-    def close(self):
+    def _close(self):
         if self.changed_since_opening:
             if not self.check_storage():
                 self._update_cluster_all()     
             self.save_maps()
-        return super().close()
+        return super()._close()
 
     def read(self, data_i, appdir = "", appname = "", *arg, force = False, **kwarg):
         '''

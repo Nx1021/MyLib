@@ -28,7 +28,7 @@ SINGLE_BASE_FRAME_ARUCO_NUM = 3
 STOP_COLOR_THRESHOLD = 30
 STOP_BLACK_TIME = 3
 
-TEST = True
+TEST = False
 
 from . import RGB_DIR, DEPTH_DIR, CALI_INTR_FILE, DATA_INTR_FILE, FRAMETYPE_DATA
 from . import JsonIO
@@ -260,9 +260,10 @@ class RsCamera():
         self.intr = CameraIntr.from_json(camera_parameters)
 
         # 设置亮度、对比度和曝光度等参数
-        sensors[1].set_option(rs.option.brightness,5)
-        sensors[1].set_option(rs.option.contrast,40)
-        sensors[1].set_option(rs.option.exposure, 120.000)
+        sensors[1].set_option(rs.option.brightness,0)
+        sensors[1].set_option(rs.option.contrast, 50)
+        sensors[1].set_option(rs.option.exposure, 312)
+        sensors[1].set_option(rs.option.saturation, 70)
 
         # 定义深度图滤波器
         self.spatial = rs.spatial_filter() # 空间滤波器

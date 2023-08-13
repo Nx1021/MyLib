@@ -1,4 +1,4 @@
-from posture_6d.data.dataset_format import DatasetFormat, DST, ClusterNotRecommendWarning
+from . import DatasetFormat, DST, ClusterNotRecommendWarning
 import matplotlib.pyplot as plt
 import numpy as np
 import os
