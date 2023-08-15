@@ -12,6 +12,7 @@ import shutil
 import pickle
 import cv2
 import time
+from tqdm import tqdm
 import warnings
 
 from abc import ABC, abstractmethod
@@ -85,7 +86,7 @@ class WriteController():
         pass
 
 #### Warning Types ####
-class ClusterDataNotFoundError(Exception):
+class ClusterDataIOError(Exception):
     def __init__(self, *args: object) -> None:
         super().__init__(*args)
 
@@ -241,6 +242,10 @@ class _DataCluster(ABC, Generic[FT, DCT]):
     def _clear(self, *arg, **kwargs):
         pass
 
+    @abstractmethod
+    def _copyto(self, dst: str, *args, **kwargs):
+        pass
+
     def _init_attr(self, *args, **kwargs):
         '''Method to initialize additional attributes specified by subclasses.'''
         pass
@@ -339,7 +344,7 @@ class _DataCluster(ABC, Generic[FT, DCT]):
                     return None
             try:
                 rlt = func(self, data_i, *args, **kwargs)  # Calls the original function.
-            except ClusterDataNotFoundError:
+            except ClusterDataIOError:
                 rlt = None
             return rlt
         return wrapper
@@ -368,12 +373,16 @@ class _DataCluster(ABC, Generic[FT, DCT]):
                             is not allowed to overwitre, any write operation will not be executed.",
                                 ClusterIONotExecutedWarning)
                 return None
-            rlt = func(self, data_i, value, *args, **kwargs)  # Calls the original function.
-            self.changed_since_opening = True  # Marks the cluster as updated after writing operations.
-            if data_i is None:
-                self._update_cluster_all(*args, **kwargs)
+            try:
+                rlt = func(self, data_i, value, *args, **kwargs)  # Calls the original function.
+            except ClusterDataIOError:
+                rlt = None
             else:
-                self._update_cluster_inc(data_i, *args, **kwargs)
+                self.changed_since_opening = True  # Marks the cluster as updated after writing operations.
+                if data_i is None:
+                    self._update_cluster_all(*args, **kwargs)
+                else:
+                    self._update_cluster_inc(data_i, *args, **kwargs)
             return rlt
         return wrapper
 
@@ -404,7 +413,19 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         '''
         assert self.check_key(data_i)
         return self.__cluster_write_func(self, data_i, value, *args, force = force, **kwargs)
-    
+
+    def copyto(self, dst: str, cover:bool, *args, **kwargs):
+        '''
+        copy the cluster to dst
+        '''
+        if os.path.exists(dst):
+            if cover:
+                warnings.warn(f"{dst} exists, it will be deleted", ClusterParaWarning)
+                shutil.rmtree(dst)
+            else:
+                raise ValueError(f"{dst} exists, it will not be deleted, please set cover=True")
+        self._copyto(dst, *args, **kwargs)
+
     def __repr__(self):
         return f"{self.__class__.__name__}({self.format_obj}, {self.sub_dir}) at {hex(id(self))}"
 
@@ -505,6 +526,11 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
         with open(self.directory, 'w'):
             pass
         dict.clear(self)
+
+    def _copyto(self, dst: str, *args, **kwargs):
+        super()._copyto(dst, *args, **kwargs)
+        os.makedirs(os.path.split(dst)[0], exist_ok=True)
+        shutil.copy(self.directory, dst)
 
     def _init_attr(self, *args, **kwargs):
         _DataCluster._init_attr(self, *args, **kwargs)
@@ -645,6 +671,17 @@ class Elements(_DataCluster[FT, DCT]):
             self._update_cluster_all()
         return self._data_i_appendnames
 
+    @property
+    def cache_mode(self):
+        return self.__cache_mode
+    
+    @cache_mode.setter
+    def cache_mode(self, value:bool):
+        if self.load_cache():
+            self.__cache_mode = bool(value)
+        else:
+            warnings.warn("no cache file, can not set to  cache mode. call save_cache' first", ClusterParaWarning)
+
     def __len__(self):
         '''
         Count the total number of files in the directory
@@ -684,30 +721,55 @@ class Elements(_DataCluster[FT, DCT]):
 
     def _read(self, data_i, appdir = "", appname = "", *arg, **kwargs)->DCT:
         super()._read(data_i, *arg, **kwargs)
-        path = self.format_path(data_i, appdir=appdir, appname=appname)
-        if not os.path.exists(path):
-            path = self.auto_path(data_i)
-        if os.path.exists(path):
-            return self.read_func(path, *arg, **kwargs)
+        if not self.cache_mode:
+            path = self.format_path(data_i, appdir=appdir, appname=appname)
+            if not os.path.exists(path):
+                path = self.auto_path(data_i)
+            if os.path.exists(path):
+                return self.read_func(path, *arg, **kwargs)
+            else:
+                raise ClusterDataIOError(f"can't find {path}")
         else:
-            raise ClusterDataNotFoundError(f"can't find {path}")
+            if data_i in self.__cache:
+                return self.__cache[data_i]
+            else:
+                raise ClusterDataIOError(f"can't find {path}")
         
     def _write(self, data_i, value:DCT, appdir = "", appname = "", *arg, **kwargs):
         super()._write(data_i, value, *arg, **kwargs)
-
-        path = self.format_path(data_i, appdir=appdir, appname=appname)
-        dir_ = os.path.split(path)[0]
-        os.makedirs(dir_, exist_ok=True)
-        if value is not None:
-            self.write_func(path, value, *arg, **kwargs)
+        if not self.cache_mode:
+            path = self.format_path(data_i, appdir=appdir, appname=appname)
+            dir_ = os.path.split(path)[0]
+            os.makedirs(dir_, exist_ok=True)
+            if value is not None:
+                self.write_func(path, value, *arg, **kwargs)
+        else:
+            warnings.warn("can't write in cache_mode", ClusterIONotExecutedWarning)
 
     def _clear(self, *arg, **kwargs):
         super()._clear(*arg, **kwargs)
         shutil.rmtree(self.directory)
         os.makedirs(self.directory)
 
+    def _copyto(self, dst: str, *args, **kwargs):
+        super()._copyto(dst, *args, **kwargs)
+        if not self.cache_mode:
+            shutil.copytree(self.directory, dst)
+        else:
+            os.makedirs(dst, exist_ok=True)
+            shutil.copy(os.path.join(self.directory, self.__data_i_dir_map_name), 
+                        os.path.join(dst, self.__data_i_dir_map_name))
+            shutil.copy(os.path.join(self.directory, self.__data_i_appendnames_name),
+                        os.path.join(dst, self.__data_i_appendnames_name))
+            shutil.copy(os.path.join(self.directory, self.__cache_name),
+                        os.path.join(dst, self.__cache_name))
+
     def _init_attr(self, read_func, write_func, suffix, filllen, fillchar, *args, **kwargs):
         super()._init_attr(*args, **kwargs)
+        self.__data_i_dir_map_name = "data_i_dir_map.elmm"
+        self.__data_i_appendnames_name = "data_i_appendnames.elmm"
+        self.__cache_name = "cache.elmcache"
+
         self.filllen    = filllen
         self.fillchar   = fillchar
         self.suffix     = suffix
@@ -719,7 +781,13 @@ class Elements(_DataCluster[FT, DCT]):
         self._data_i_dir_map = {}
         self._data_i_appendnames = {}
 
-        self.__has_saved_maps = self.load_maps()
+        self.__cache_mode = False
+        self.__cache = {}
+
+        self.load_maps()
+        if len(self) == 0:
+            if self.load_cache():
+                self.cache_mode = True
 
     def _update_cluster_inc(self, data_i, appdir = "", appname = "", *arg, **kwargs):
         self._data_i_dir_map[data_i] = appdir
@@ -738,7 +806,7 @@ class Elements(_DataCluster[FT, DCT]):
         self._data_i_dir_map = dict(sorted(self._data_i_dir_map.items(), key=lambda x:x[0]))
         self._data_i_appendnames = dict(sorted(self._data_i_appendnames.items(), key=lambda x:x[0]))
 
-        if not self.__has_saved_maps:
+        if len(self._data_i_dir_map) > 0:
             self.save_maps()
 
     def __getitem__(self, idx):
@@ -858,25 +926,68 @@ class Elements(_DataCluster[FT, DCT]):
             return False
 
     def save_maps(self):
-        for name, map in zip(("data_i_dir_map", "data_i_appendnames"), (self._data_i_dir_map, self._data_i_appendnames)):
-            path = os.path.join(self.directory, name + ".npy")
-            path_elmm = os.path.join(self.directory, name + ".elmm")
+        for name, map in zip((self.__data_i_dir_map_name, self.__data_i_appendnames_name), 
+                             (self._data_i_dir_map, self._data_i_appendnames)):
+            path = os.path.join(self.directory, os.path.splitext(name)[0] + ".npy")
+            path_elmm = os.path.join(self.directory, name)
             np.save(path, map)
             try:
                 os.remove(path_elmm)
             except FileNotFoundError:
                 pass
             os.rename(path, path_elmm)
-        self.__has_saved_maps = True
 
     def load_maps(self):
-        data_i_dir_map_path         = os.path.join(self.directory, "data_i_dir_map.elmm")
-        data_i_appendnames_path     = os.path.join(self.directory, "data_i_appendnames.elmm")
+        data_i_dir_map_path         = os.path.join(self.directory, self.__data_i_dir_map_name)
+        data_i_appendnames_path     = os.path.join(self.directory, self.__data_i_appendnames_name)
         if os.path.exists(data_i_dir_map_path) and os.path.exists(data_i_appendnames_path):
             self._data_i_dir_map        = np.load(data_i_dir_map_path, allow_pickle=True).item()
             self._data_i_appendnames    = np.load(data_i_appendnames_path, allow_pickle=True).item()
             return True
-        return False
+        else:
+            self._update_cluster_all()
+    
+    def __parse_cache_kw(self, **kw):
+        assert all([isinstance(v, list) for v in kw.values()])
+        assert all([len(v) == len(self) for v in kw.values()])
+        kw_keys = list(kw.keys())
+        kw_values = list(kw.values())
+        return kw_keys, kw_values
+
+    def save_cache(self, **kw):
+        self.__cache.clear()
+        data_i_list = list(self.keys())
+        kw_keys, kw_values = self.__parse_cache_kw(**kw)
+        for data_i in tqdm(data_i_list, desc="save cache for {}".format(self.directory)):
+            read_kw = {k:v[data_i] for k, v in zip(kw_keys, kw_values)}
+            elem = self.read(data_i, **read_kw)
+            self.__cache[data_i] = elem
+        serialize_object(os.path.join(self.directory, self.__cache_name), self.__cache)
+
+    def load_cache(self):
+        cache_path = os.path.join(self.directory, self.__cache_name)
+        if os.path.exists(cache_path):
+            self.__cache = deserialize_object(cache_path)
+            return True
+        else:
+            return False
+        
+    def unzip_cache(self, **kw):
+        '''
+        unzip the cache to a dict
+        '''
+        assert os.path.exists(os.path.join(self.directory, self.__data_i_dir_map_name))
+        assert os.path.exists(os.path.join(self.directory, self.__data_i_appendnames_name))
+        assert os.path.exists(os.path.join(self.directory, self.__cache_name))
+        kw_keys, kw_values = self.__parse_cache_kw(**kw)
+        if len(self.__cache) == 0:
+            self.load_cache()
+        for kd, ka, kc in zip(self._data_i_dir_map.keys(), self._data_i_appendnames.keys(), self.__cache.keys()):
+            assert kd == ka == kc
+            data_i = kd
+            value = self.__cache[kd]
+            write_kw = {k:v[data_i] for k, v in zip(kw_keys, kw_values)}
+            self.write(kd, value, **write_kw)
 
 class FileCluster(_DataCluster[FT, DCT]):
     '''
@@ -890,18 +1001,21 @@ class FileCluster(_DataCluster[FT, DCT]):
             self.write_func:Callable = write_func
             self.cluster:FileCluster = None
 
+        @property
+        def path(self):
+            return os.path.join(self.cluster.directory, self.sub_path)
+
         def set_cluster(self, cluster:"FileCluster"):
             self.cluster = cluster
-            self.path = os.path.join(cluster.directory, self.sub_path)
 
         def read(self):
             return self.read_func(self.path)
         
-        def wrtie(self, data):
+        def write(self, data):
             self.write_func(self.path, data)
 
-    def __init__(self, format_obj: FT, sub_dir = "", *singlefile:SingleFile) -> None:
-        super().__init__(format_obj, sub_dir, False, *singlefile)
+    def __init__(self, format_obj: FT, sub_dir = "", register = True, *singlefile:SingleFile) -> None:
+        super().__init__(format_obj, sub_dir, register, *singlefile)
 
     @property
     def files(self):
@@ -914,7 +1028,7 @@ class FileCluster(_DataCluster[FT, DCT]):
         self.__files = value
 
     @property
-    def all_exits(self):
+    def all_exist(self):
         for f in self.__files.values():
             if not os.path.exists(f.path):
                 return False
@@ -928,9 +1042,9 @@ class FileCluster(_DataCluster[FT, DCT]):
         super().keys()
         return list(self.__files.keys())
     
-    def values(self):
+    def values(self) -> list[SingleFile]:
         super().values()
-        return self.read()
+        return list(self.__files.values())
     
     def items(self):
         super().items()
@@ -938,18 +1052,30 @@ class FileCluster(_DataCluster[FT, DCT]):
 
     def _read(self, data_i, *arg, **kwargs):
         super()._read(data_i, *arg, **kwargs)
-        return [f.read() for f in self.__files.values()]
+        file_path = self.filter_data_i(data_i)
+        return self.__files[file_path].read()
     
     def _write(self, data_i, value, *arg, **kwargs):
-        assert len(value) == len(self.__files), f"the length of value must be {len(self.__files)}"
         super()._write(data_i, value, *arg, **kwargs)
-        for f, d in zip(self.__files.values(), value):
-            f.wrtie(d)
+        file_path = self.filter_data_i(data_i)
+        return self.__files[file_path].write(value)
 
     def _clear(self, *arg, **kwargs):
-        warnings.warn("it's not allowed to use clear() for FileCluster, \
-                       please use write()", ClusterIONotExecutedWarning)
-        return None
+        super()._clear(*arg, **kwargs)
+        for fp in self.__files.keys():
+            os.remove(fp)
+
+    def _copyto(self, dst: str, cover = False, *args, **kwargs):
+        super()._copyto(dst, *args, **kwargs)
+        os.makedirs(dst, exist_ok=True)
+        for f in self.__files.values():
+            dst_path = os.path.join(dst, f.sub_path)
+            if os.path.exists(dst_path):
+                if cover:
+                    os.remove(dst_path)
+                else:
+                    raise FileExistsError(f"{dst_path} already exists, please set cover=True")
+            shutil.copy(f.path, dst_path)
 
     def _init_attr(self, *singlefile:SingleFile, **kwargs):
         super()._init_attr(*singlefile, **kwargs)
@@ -959,15 +1085,39 @@ class FileCluster(_DataCluster[FT, DCT]):
             f.set_cluster(self)
             self.update_file(f)
 
-    def read(self, *args, force = False, **kwargs):
-        return super().read(None, *args, force=force, **kwargs)
-    
-    def write(self, value, *args, force = False, **kwargs):
-        return super().write(None, value, *args, force=force, **kwargs)
+    def register_to_format(self):
+        if self.register:
+            self.format_obj.cluster_map[self.directory + str(id(self))] = self
+
+    def filter_data_i(self, data_i):
+        if isinstance(data_i, int):
+            if data_i > len(self.__files):
+                raise ClusterDataIOError("out of range")
+            return list(self.__files.keys())[data_i]
+        elif isinstance(data_i, str):
+            if data_i not in self.__files:
+                raise ClusterDataIOError(f"can't find {data_i} in {self.directory}")
+            return data_i
+        else:
+            raise TypeError(f"unsupported type: {type(data_i)}")
+
+    def copyto(self, dst: str, cover = False, *args, **kwargs):
+        '''
+        copy the whole directory to dst
+        '''
+        self._copyto(dst, cover, *args, **kwargs)
+
+    def read_all(self):
+        return [f.read() for f in self.values()]
+
+    def write_all(self, values):
+        assert len(values) == len(self), f"the length of value must be {len(self)}"
+        for f, d in zip(self.values(), values):
+            f.write(d)
 
     def remove_file(self, idx:Union[int, str]):
         if isinstance(idx, int):
-            idx = list(self.__files.keys())[idx]
+            idx = list(self.keys())[idx]
         self.__files.pop(idx)
 
     def update_file(self, singlefile:SingleFile):
@@ -975,7 +1125,7 @@ class FileCluster(_DataCluster[FT, DCT]):
         self.__files[singlefile.path] = singlefile
 
     def paths(self):
-        return list(self.__files.keys())
+        return list(self.keys())
 
 class IntArrayDictElement(Elements[FT, dict[int, np.ndarray]]):
     def __init__(self, format_obj: FT, sub_dir:str, array_shape:tuple[int], array_fmt:str = "", register=True, filllen=6, fillchar='0') -> None:
@@ -1201,8 +1351,18 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
         return clusters
 
     @property
+    def data_clusters(self):
+        clusters = [x for x in self.clusters if not isinstance(x, FileCluster)]
+        return clusters
+
+    @property
     def opened_clusters(self):
         clusters = [x for x in self.clusters if not x.is_close()]
+        return clusters
+
+    @property
+    def opened_data_clusters(self):
+        clusters = [x for x in self.data_clusters if not x.is_close()]
         return clusters
 
     @property
@@ -1233,7 +1393,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
     @property
     def data_i_upper(self):
         return self._data_i_upper
-        return max([x.cluster_data_i_upper for x in self.opened_clusters])
+        # return max([x.cluster_data_i_upper for x in self.opened_clusters])
         
     @abstractmethod
     def read_one(self, data_i, *arg, **kwargs) -> DST:
@@ -1252,7 +1412,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
         pass
 
     def _update_dataset(self, data_i = None):
-        nums = [len(x) for x in self.opened_clusters]
+        nums = [len(x) for x in self.opened_data_clusters]
         num = np.unique(nums)
         if len(num) > 1:
             raise ValueError("Unknown error, the numbers of different datas are not equal")
@@ -1261,7 +1421,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
         else:
             self._data_num = 0
         try:
-            self._data_i_upper = max([x.cluster_data_i_upper for x in self.opened_clusters])
+            self._data_i_upper = max([x.cluster_data_i_upper for x in self.opened_data_clusters])
         except ValueError:
             self._data_i_upper = 0
         if self._data_i_upper != self.data_num:
@@ -1277,6 +1437,13 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
         self._write_files(data_i, data)
 
         self.update_dataset(data_i)
+
+    def save_elements_cache(self):
+        pass
+
+    def set_elements_cachemode(self, mode:bool):
+        for elem in self.elements_map.values():
+            elem.cache_mode = bool(mode)
 
     def get_mark_file(self):
         return os.path.join(self.directory, ".dfsw")
@@ -1360,6 +1527,14 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
 
         self.set_all_read_only(True)
 
+    def copyto(self, dst:str, cover = False):
+        progress = tqdm(self.opened_clusters)
+        for c in progress:
+            progress.set_postfix({'copying': "{}:{}".format(c.__class__.__name__, c.directory)})            
+            c.copyto(os.path.join(dst, c.sub_dir), cover=cover)
+
+
+
     def close_all(self, value = True):
         for obj in list(self.elements_map.values()) + list(self.jsondict_map.values()):
             obj.close() if value else obj.open()
@@ -1393,7 +1568,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
 
     def __iter__(self):
         return self.read_from_disk()
-    
+ 
 #### Posture ####
 
 class PostureDatasetFormat(DatasetFormat[ViewMeta]):
@@ -1768,17 +1943,19 @@ class VocFormat(PostureDatasetFormat):
                 self.__reset_trigger()                    
                 return super().write(data_i, labels_dict, appdir, appname, *arg, force=force, image_size = image_size, **kw)
 
+
+
     def __init__(self, directory, data_num = 0, split_rate = 0.75, clear = False) -> None:
         super().__init__(directory, clear)
 
-        self.train_txt = os.path.join(self.directory,   VocFormat.KW_TRAIN + ".txt")
-        self.val_txt = os.path.join(self.directory,     VocFormat.KW_VAL + ".txt")
+        # self.train_txt = os.path.join(self.directory,   VocFormat.KW_TRAIN + ".txt")
+        # self.val_txt = os.path.join(self.directory,     VocFormat.KW_VAL + ".txt")
         self.split_rate = split_rate
         self.get_split_file(data_num, split_rate)
 
     def _init_clusters(self):
         super()._init_clusters()
-        self.images_elements     = Elements(self, "images",       
+        self.images_elements:Elements[VocFormat, np.ndarray]     = Elements(self, "images",       
                                             read_func=cv2.imread, 
                                             write_func=cv2.imwrite,
                                             suffix = ".jpg")
@@ -1801,18 +1978,28 @@ class VocFormat(PostureDatasetFormat):
         self.visib_fract_elements= IntArrayDictElement(self, "visib_fracts", ())
         self.labels_elements     = self.cxcywhLabelElement(self, "labels",)
 
+        self.loadsplittxt_func = lambda p: np.loadtxt(p).astype(np.int32).reshape(-1)
+        self.savesplittxt_func = lambda p, v: np.savetxt(p, v.reshape(-1, 1), fmt="%6d")
+
+        self.detection_split_files = FileCluster(self, "", True, 
+                                      FileCluster.SingleFile(VocFormat.KW_TRAIN + ".txt", 
+                                                             self.loadsplittxt_func, 
+                                                             self.savesplittxt_func),
+                                      FileCluster.SingleFile(VocFormat.KW_VAL   + ".txt", 
+                                                             self.loadsplittxt_func, 
+                                                             self.savesplittxt_func))
+
     def stop_writing(self):
         super().stop_writing()
-        np.savetxt(self.train_txt,   self.detection_train_idx_array,    fmt = "%6d")
-        np.savetxt(self.val_txt,     self.detection_val_idx_array,      fmt = "%6d")   
+        self.detection_split_files.write_all((self.detection_train_idx_array,
+                               self.detection_val_idx_array)) 
 
     def get_split_file(self, data_num, split_rate):
         create = False
         if data_num == 0:
             # 存在则读取，不存在则创建
-            if os.path.exists(self.train_txt):
-                self.detection_train_idx_array = np.loadtxt(self.train_txt).astype(np.int32)
-                self.detection_val_idx_array   = np.loadtxt(self.val_txt).astype(np.int32)
+            if self.detection_split_files.all_exist:
+                self.detection_train_idx_array, self.detection_val_idx_array = self.detection_split_files.read_all()
             else:
                 create = True
         else:
@@ -1823,8 +2010,8 @@ class VocFormat(PostureDatasetFormat):
             np.random.shuffle(data_i_list) 
             self.detection_train_idx_array = np.array(data_i_list[: int(data_num*split_rate)]).astype(np.int32).reshape(-1)
             self.detection_val_idx_array   = np.array(data_i_list[int(data_num*split_rate): ]).astype(np.int32).reshape(-1)
-            np.savetxt(self.train_txt, self.detection_train_idx_array, fmt = "%6d")
-            np.savetxt(self.val_txt, self.detection_val_idx_array, fmt = "%6d")
+            self.detection_split_files.write_all((self.detection_train_idx_array,
+                                self.detection_val_idx_array))
 
     @property
     def train_idx_array(self):
@@ -1967,6 +2154,15 @@ class VocFormat(PostureDatasetFormat):
         viewmeta.set_element(ViewMeta.VISIB_FRACT, visib_fract_dict)
 
         return viewmeta
+
+    def save_elements_cache(self):
+        self.labels_elements.save_cache(image_size=[img.shape[:2][::-1] for img in self.images_elements])
+        self.bbox_3ds_elements.save_cache()
+        self.depth_scale_elements.save_cache()
+        self.intr_elements.save_cache()
+        self.landmarks_elements.save_cache()
+        self.extr_vecs_elements.save_cache()
+        self.visib_fract_elements.save_cache()
 
 class _LinemodFormat_sub1(LinemodFormat):
     class _MasksElements(LinemodFormat._MasksElements):
