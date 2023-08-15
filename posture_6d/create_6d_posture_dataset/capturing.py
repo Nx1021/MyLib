@@ -545,9 +545,11 @@ class Capturing():
         c = self.this_color.copy()
         # 深度图色彩化
         d = np.asanyarray(self.this_depth_frame.get_data())  # 获取深度图像数据
+        max_dn = self.rs_camera.intr.max_depth / self.rs_camera.intr.depth_scale
+        d[d > max_dn] = max_dn
         norm_depth_image = d.astype(np.float32)  # 转换数据类型为浮点型
         # 对深度图像进行限制，超过一定深度范围的值设为最大深度值
-        norm_depth_image[norm_depth_image > int(2 / self.rs_camera.intr.depth_scale)] = int(2 / self.rs_camera.intr.depth_scale)
+        # norm_depth_image[norm_depth_image > int(2 / self.rs_camera.intr.depth_scale)] = int(2 / self.rs_camera.intr.depth_scale)
         norm_depth_image = (norm_depth_image)/(norm_depth_image.max()+1)  # 归一化深度图像
         norm_depth_image = (norm_depth_image*255).astype(np.uint8)  # 缩放深度图像的像素值到 0~255
         depth_colormap = cv2.applyColorMap(norm_depth_image, cv2.COLORMAP_JET)  # 将深度图像转换为伪彩色图像
