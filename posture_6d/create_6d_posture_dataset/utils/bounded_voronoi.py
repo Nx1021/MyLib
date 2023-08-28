@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
+import cv2
+import skimage
 
 def bounded_voronoi(bnd, pnts, plot = False):
     """
@@ -55,6 +57,36 @@ def bounded_voronoi(bnd, pnts, plot = False):
 
     # plt.show()
     return vor_polys
+
+def get_seg_maps(floor_slice_map, restore_mat, scale = 1000, model_num = 9):
+    filter_k = np.ones((3,3), np.uint8)
+    image = cv2.morphologyEx(floor_slice_map, cv2.MORPH_CLOSE, filter_k, iterations=1)
+    ### 根据第一层提取中心点，完成vorinoi图的分割
+    not_image = np.logical_not(image).astype(np.uint8)
+    labels_num = 0
+    while np.max(skimage.measure.label(not_image)) > model_num:
+        not_image = cv2.morphologyEx(not_image, cv2.MORPH_DILATE, filter_k, iterations=1)
+    labels = skimage.measure.label(not_image) #分割孤立实体
+    labels_num = np.max(labels)
+    ptns = []
+    for i in range(1, labels.max() + 1):
+        area = np.sum(labels == i)
+        if area < 9:
+            continue
+        else:
+            coords = np.array(np.where(labels == i)).T
+            ptns.append(np.mean(coords, axis=0))
+    ptns = np.array(ptns)        
+    bnd = np.array([[0, 0], [image.shape[0], 0], image.shape, [0, image.shape[1]]])
+    vor_polys = bounded_voronoi(bnd, ptns)
+    vor_polys_restore = []
+    for vp in vor_polys:
+        vp = np.array(vp)
+        vp = np.hstack((vp, np.zeros((vp.shape[0], 1))))
+        vp = np.hstack((vp, np.ones((vp.shape[0], 1))))
+        vp_coord = restore_mat.dot(vp.T).T[:, :3] / scale
+        vor_polys_restore.append(vp_coord)
+    return vor_polys_restore
 
 if __name__ == "__main__":
     # ボロノイ分割する領域

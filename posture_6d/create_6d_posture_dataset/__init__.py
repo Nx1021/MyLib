@@ -22,8 +22,8 @@ REFINER_DIR = "refiner"
 REFINER_FRAME_DATA = "frame_data"
 ARUCO_FLOOR = "aruco_floor"
 
-CALI_INTR_FILE = "intrinsics_cali.json"
-DATA_INTR_FILE = "intrinsics_data.json"
+CALI_INTR_FILE = "intrinsics_0.json"
+DATA_INTR_FILE = "intrinsics_1.json"
 
 FRAMETYPE_GLOBAL = "global_base_frames"
 FRAMETYPE_LOCAL = "local_base_frames"

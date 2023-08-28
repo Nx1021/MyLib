@@ -1,4 +1,4 @@
-from . import DatasetFormat, DST, ClusterNotRecommendWarning
+from . import DatasetFormat, DST, ClusterNotRecommendWarning, FRAMETYPE_DATA
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -32,11 +32,11 @@ class CommonData(DatasetFormat[DST]):
                                 read_func=cv2.imread,
                                 write_func=cv2.imwrite,
                                 suffix='.jpg')
-        self.aruco_floor_json       = FileCluster(self, "../",
+        self.aruco_floor_json       = FileCluster(self, "../", True,
                                                   FileCluster.SingleFile(ARUCO_FLOOR + ".json", 
                                                                             JsonIO.load_json, 
                                                                             JsonIO.dump_json))
-        self.aruco_floor_png        = FileCluster(self, "../",
+        self.aruco_floor_png        = FileCluster(self, "../", True,
                                                   FileCluster.SingleFile(ARUCO_FLOOR + ".png", 
                                                                             cv2.imread, 
                                                                             cv2.imwrite),
@@ -49,10 +49,14 @@ class CommonData(DatasetFormat[DST]):
         for i in range(len(self.std_meshes)):
             self.std_meshes_names.append(self.std_meshes.auto_path(i, return_app=True)[-1])
 
-        self.imu_calibration        = FileCluster(self, "../",
+        self.imu_calibration        = FileCluster(self, "../", True,
                                                   FileCluster.SingleFile("imu_calibration.json", 
                                                                             JsonIO.load_json, 
                                                                             JsonIO.dump_json))
+        
+        self.barycenter_dict        = JsonDict(self, "../std_meshes/barycenter.json", False)
+        self.barycenter_dict.save_mode = JsonDict.SAVE_IMMIDIATELY
+
 
 class EnumElements(Elements[CommonData, Any]):
     # def __init__(self, format_obj: "ModelManager", sub_dir, register=True, read_func = ..., write_func = ..., suffix: str = '.txt', filllen=6, fillchar='0') -> None:
@@ -64,6 +68,8 @@ class EnumElements(Elements[CommonData, Any]):
         return self.format_obj.std_meshes_names
 
     def format_path(self, enum:Union[str, int], appdir="", appname="", **kw):
+        if isinstance(enum, (np.intc, np.integer)):
+            enum = int(enum)
         if not appname:
             if isinstance(enum, int):
                 appname = self.dulmap_id_name(enum)
@@ -131,8 +137,18 @@ class DataRecorder(CommonData[FrameMeta]):
                                        read_func=np.load,
                                        write_func=np.save,
                                        suffix='.npy')
+        
+        self.intr_0_file = FileCluster(self, "./", True,
+                                  FileCluster.SingleFile("intrinsics_0.json",
+                                                            JsonIO.load_json,
+                                                            JsonIO.dump_json))
+        self.intr_1_file = FileCluster(self, "./", True,
+                                    FileCluster.SingleFile("intrinsics_1.json",
+                                                            JsonIO.load_json,
+                                                            JsonIO.dump_json))
+
         self.close_all(False)
-        self.set_all_read_only(False)
+        self.set_all_readonly(False)
 
         self.category_names = self.std_meshes_names.copy()
         self.category_names.insert(0, "global_base_frames") # 在标准模型列表的第一位插入"global_base_frames"
@@ -143,7 +159,6 @@ class DataRecorder(CommonData[FrameMeta]):
         self.AddNum = 0 # 当前标准模型已采集的增量帧数
         self.skip_segs = []
 
-     
         self._category_idx_range = {}
 
     def inc_idx(self):
@@ -190,7 +205,12 @@ class DataRecorder(CommonData[FrameMeta]):
         depth = self.depth_elements.read(data_i)
         trans = self.trans_elements.read(data_i)
 
-        return FrameMeta(trans_mat_Cn2C0=trans, rgb=rgb, depth=depth)
+        if data_i in self.category_idx_range[FRAMETYPE_DATA]:
+            intr_M = self.intr_1_file.read(0)
+        else:
+            intr_M = self.intr_0_file.read(0)
+
+        return FrameMeta(trans_mat_Cn2C0=trans, rgb=rgb, depth=depth, intr_M=intr_M)
 
     def read_from_disk(self) -> Generator[FrameMeta, Any, None]:
         return super().read_from_disk()
@@ -263,32 +283,33 @@ class ModelManager(CommonData):
 
     def _init_clusters(self):
         super()._init_clusters()
-        self.registerd_pcd = EnumElements(self, "registerd_pcd",
+        self.registerd_pcd = EnumElements(self, "registerd_pcd", False,
                                       read_func=o3d.io.read_point_cloud,
                                       write_func=o3d.io.write_point_cloud,
                                       suffix='.ply')
-        self.voronoi_segpcd = EnumElements(self, "voronoi_segpcd",
+        self.voronoi_segpcd = EnumElements(self, "voronoi_segpcd", False,
                                         read_func=o3d.io.read_point_cloud,
                                         write_func=o3d.io.write_point_cloud,
                                         suffix='.ply')
-        self.extracted_mesh = EnumElements(self, "extracted_mesh",
+        self.extracted_mesh = EnumElements(self, "extracted_mesh", False,
                                         read_func=o3d.io.read_triangle_mesh,
                                         write_func=o3d.io.write_triangle_mesh,
                                         suffix='.ply')
-        self.icp_trans      = EnumElements(self, "icp_trans", 
+        self.icp_trans      = EnumElements(self, "icp_trans", False,
                                         read_func=np.load,
                                         write_func=np.save,
                                         suffix='.npy')
-        self.icp_std_mesh = EnumElements(self, "icp_std_mesh",
+        self.icp_std_mesh = EnumElements(self, "icp_std_mesh", False,
                                         read_func = o3d.io.read_triangle_mesh,
                                         write_func= o3d.io.write_triangle_mesh,
                                         suffix='.ply')
-        self.icp_unf_pcd = EnumElements(self, "icp_unf_pcd",
+        self.icp_unf_pcd = EnumElements(self, "icp_unf_pcd", False,
                                         read_func=o3d.io.read_point_cloud,
                                         write_func=o3d.io.write_point_cloud,
                                         suffix='.ply')        
         
-        self.merged_regist_pcd_file = FileCluster(self, "", FileCluster.SingleFile("merged.ply",
+        self.merged_regist_pcd_file = FileCluster(self, "", False, 
+                                                   FileCluster.SingleFile("merged.ply",
                                                                                    read_func = o3d.io.read_point_cloud,
                                                                                    write_func= o3d.io.write_point_cloud))
 

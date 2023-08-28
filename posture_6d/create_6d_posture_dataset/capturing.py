@@ -422,7 +422,24 @@ class Capturing():
         self.parameters = aruco.DetectorParameters_create()
         self.ignore_stable = False
 
-        self.rs_camera = rs_camera
+        self.__rs_camera = rs_camera
+
+    @property
+    def rs_camera(self):
+        return self.__rs_camera
+    
+    @rs_camera.setter
+    def rs_camera(self, rs_camera:RsCamera):
+        assert isinstance(rs_camera, RsCamera), "para:rs_camera is not a RsCamera"
+        self.__rs_camera = rs_camera
+
+        if rs_camera.mode == 0:
+            intr_json_dir = self.data_recorder.intr_0_file.files[0].path
+        elif rs_camera.mode == 1:
+            intr_json_dir = self.data_recorder.intr_1_file.files[0].path
+        else:
+            raise Exception("rs_camera.mode is illegal")
+        self.__rs_camera.intr.save_as_json(intr_json_dir)
 
     def read_trans_mats(self):
         # 清空变换矩阵列表和记录位置列表
@@ -803,7 +820,6 @@ class Capturing():
             else:
                 pass
             self.__clear_buffer()           
-
 
 
     # for mode, func in zip([Camera.MODE_DATA], [callback_DATA]):

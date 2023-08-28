@@ -119,7 +119,7 @@ class _DataCluster(ABC, Generic[FT, DCT]):
     * register: bool, whether to register to format_obj
     * _incomplete: bool, whether the data is incomplete
     * _closed: bool, Indicates whether the cluster is closed or open.
-    * _read_only: bool, Indicates whether the cluster is read-only or write-enabled.
+    * _readonly: bool, Indicates whether the cluster is read-only or write-enabled.
     * changes_unsaved: bool, Indicates if any changes have been made to the cluster.
     * directory: str, Directory path for the cluster.
 
@@ -156,8 +156,8 @@ class _DataCluster(ABC, Generic[FT, DCT]):
     - open: open the cluster for operation.
     - close: close the cluster, preventing further operations.
     - is_close: check if the cluster is closed.
-    - set_read_only: set the cluster as read-only or write-enabled.
-    - is_read_only: check if the cluster is read-only.
+    - set_readonly: set the cluster as read-only or write-enabled.
+    - is_readonly: check if the cluster is read-only.
     - _read_decorator: decorator function to handle reading operations when the cluster is closed.
     - _write_decorator: decorator function to handle writing operations when the cluster is closed or read-only.
     - clear: clear any data in the cluster. Subclasses may implement _clear.
@@ -172,7 +172,7 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         self._incomplete = self.format_obj.incomplete
         self._error_to_load = False
         self._closed = True  # Indicates whether the cluster is closed or open.
-        self._read_only = True  # Indicates whether the cluster is read-only or write-enabled.
+        self._readonly = True  # Indicates whether the cluster is read-only or write-enabled.
         self._changed_since_opening = False  # Indicates if any changes have been made to the cluster.
         self.directory = os.path.join(format_obj.directory, self.sub_dir)  # Directory path for the cluster.
         self._data_i_upper = 0  
@@ -275,11 +275,11 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         '''Method to open the cluster for operation.'''
         self._closed = False  # Marks the cluster as open for operation.        
         if self._incomplete:
-            read_only = self._read_only  # Stores the read-only flag.
-            self.set_read_only(False)  # Sets the cluster as write-enabled.
+            readonly = self._readonly  # Stores the read-only flag.
+            self.set_readonly(False)  # Sets the cluster as write-enabled.
             self.clear(ignore_warning=True)  # Clears any incomplete data if present.
             self._incomplete = False
-            self.set_read_only(read_only)  # Restores the read-only flag.
+            self.set_readonly(readonly)  # Restores the read-only flag.
 
     def _close(self):
         self._changed_since_opening = False  # Resets the updated flag to false.
@@ -308,23 +308,23 @@ class _DataCluster(ABC, Generic[FT, DCT]):
     def is_open(self):
         return not self.is_close()
 
-    def set_read_only(self, read_only=True):
+    def set_readonly(self, readonly=True):
         '''Method to set the cluster as read-only or write-enabled.'''
-        self._read_only = read_only
+        self._readonly = readonly
 
     def set_writable(self, writable=True):
         '''Method to set the cluster as writable or read-only.'''
-        self.set_read_only(not writable)
+        self.set_readonly(not writable)
 
-    def is_read_only(self, with_warning = False):
+    def is_readonly(self, with_warning = False):
         '''Method to check if the cluster is read-only.'''
-        if with_warning and self._read_only:
+        if with_warning and self._readonly:
             warnings.warn(f"{self.__class__.__name__}:{self.sub_dir} is read-only, any write operation will not be executed.",
                 ClusterIONotExecutedWarning)
-        return self._read_only
+        return self._readonly
     
     def is_writeable(self):
-        return not self.is_read_only()
+        return not self.is_readonly()
 
     @staticmethod
     def _read_decorator(func):
@@ -364,9 +364,11 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         '''
         def wrapper(self: "_DataCluster", data_i = None, value = None, *args, force = False, **kwargs):
             if force:
+                orig_closed = self._closed
+                orig_readonly = self._readonly
                 self.open()
                 self.set_writable()
-            if self.is_close(with_warning=True) or self.is_read_only(with_warning=True):
+            if self.is_close(with_warning=True) or self.is_readonly(with_warning=True):
                 return None
             elif not self.allow_overwrite and data_i in self.keys() and not force:
                 warnings.warn(f"{self.__class__.__name__}:{self.sub_dir} \
@@ -383,6 +385,12 @@ class _DataCluster(ABC, Generic[FT, DCT]):
                     self._update_cluster_all(*args, **kwargs)
                 else:
                     self._update_cluster_inc(data_i, *args, **kwargs)
+
+            if force:
+                if orig_closed:
+                    self.close()
+                if orig_readonly:
+                    self.set_readonly()
             return rlt
         return wrapper
 
@@ -410,6 +418,12 @@ class _DataCluster(ABC, Generic[FT, DCT]):
     def write(self, data_i, value:DCT, *args, force = False, **kwargs):
         '''
         Method to write data to the cluster. Subclasses must implement this method.
+
+        parameter
+        ----
+        * data_i: Any, the key of the data
+        * value: DCT, the value of the data
+        * force: bool, whether to force write, it's not recommended to use force=True if you want to write a lot of data
         '''
         assert self.check_key(data_i)
         return self.__cluster_write_func(self, data_i, value, *args, force = force, **kwargs)
@@ -427,7 +441,7 @@ class _DataCluster(ABC, Generic[FT, DCT]):
         self._copyto(dst, *args, **kwargs)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.format_obj}, {self.sub_dir}) at {hex(id(self))}"
+        return f"{self.__class__.__name__}({self.format_obj.__class__.__name__}, {self.sub_dir}) at {hex(id(self))}"
 
     def __del__(self):
         '''
@@ -504,7 +518,10 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
     
     def _read(self, data_i, *arg, **kwargs):
         super()._read(data_i, *arg, **kwargs)
-        return dict.__getitem__(self, data_i)
+        try:
+            return dict.__getitem__(self, data_i)
+        except KeyError:
+            raise ClusterDataIOError(f"key {data_i} does not exist")
 
     def _write(self, data_i, value, *arg, **kwargs):
         super()._write(data_i, value, *arg, **kwargs)
@@ -610,7 +627,7 @@ class JsonDict(_DataCluster[FT, DCT], dict, WriteController):
         '''
         rewrite the method of WriteController
         '''
-        self.set_read_only()
+        self.set_readonly()
         self.stream.close()
         self.reload()
 
@@ -899,14 +916,17 @@ class Elements(_DataCluster[FT, DCT]):
             if len(appendnames) == 1:
                 appname = appendnames[0]
             else:
-                raise IndexError(f'idx {data_i} has more than one appendname: {appendnames}, its path is ambiguous. \
+                raise ClusterDataIOError(f'idx {data_i} has more than one appendname: {appendnames}, its path is ambiguous. \
                                 You must specify the appname by using method:read(data_i, appname=...)')
+        else:
+            appdir = ""
+            appname = ""
         if not return_app:
             path = self.format_path(data_i, appdir=appdir, appname=appname)
             if os.path.exists(path):
                 return path
             else:
-                raise IndexError(f'idx {data_i} has no file in {self.directory}')
+                raise ClusterDataIOError(f'idx {data_i} has no file in {self.directory}')
                 return None
         else:
             return appdir, appname
@@ -972,7 +992,7 @@ class Elements(_DataCluster[FT, DCT]):
         else:
             return False
         
-    def unzip_cache(self, **kw):
+    def unzip_cache(self, force = False, **kw):
         '''
         unzip the cache to a dict
         '''
@@ -982,12 +1002,15 @@ class Elements(_DataCluster[FT, DCT]):
         kw_keys, kw_values = self.__parse_cache_kw(**kw)
         if len(self.__cache) == 0:
             self.load_cache()
-        for kd, ka, kc in zip(self._data_i_dir_map.keys(), self._data_i_appendnames.keys(), self.__cache.keys()):
+        progress = tqdm(zip(self._data_i_dir_map.keys(), self._data_i_appendnames.keys(), self.__cache.keys()), desc="unzip cache for {}".format(self.directory))
+        for kd, ka, kc in progress:
             assert kd == ka == kc
             data_i = kd
             value = self.__cache[kd]
+            appdir = self.data_i_dir_map[data_i]
+            appname = self.data_i_appendnames[data_i][0]
             write_kw = {k:v[data_i] for k, v in zip(kw_keys, kw_values)}
-            self.write(kd, value, **write_kw)
+            self.write(kd, value, appdir, appname, force=force, **write_kw)
 
 class FileCluster(_DataCluster[FT, DCT]):
     '''
@@ -1014,7 +1037,7 @@ class FileCluster(_DataCluster[FT, DCT]):
         def write(self, data):
             self.write_func(self.path, data)
 
-    def __init__(self, format_obj: FT, sub_dir = "", register = True, *singlefile:SingleFile) -> None:
+    def __init__(self, format_obj: FT, sub_dir, register, *singlefile:SingleFile) -> None:
         super().__init__(format_obj, sub_dir, register, *singlefile)
 
     @property
@@ -1222,7 +1245,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
     * clear: clear all data of the dataset
     * close_all: close all clusters
     * open_all : open all clusters
-    * set_all_read_only: set all file streams to read only
+    * set_all_readonly: set all file streams to read only
     * set_all_writable: set all file streams to writable
     * get_element_paths_of_one: get the paths of one piece of data
     * __getitem__: get one piece of data
@@ -1495,14 +1518,14 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
         with open(self.get_mark_file(), 'w'): # create a file to mark that the DatasetFormat is writing
             pass
         self.close_all(False)
-        self.set_all_read_only(False)
+        self.set_all_readonly(False)
 
     def stop_writing(self):
         super().stop_writing()
         for jd in self.jsondict_map.values():
             jd.stop_writing()              
         os.remove(self.get_mark_file())
-        self.set_all_read_only(True)
+        self.set_all_readonly(True)
 
     def clear(self, ignore_warning = False, force = False):
         '''
@@ -1517,7 +1540,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
         if y == 'y':
             if force:
                 self.close_all(False)
-                self.set_all_read_only(False)
+                self.set_all_readonly(False)
                 cluster_to_clear = self.clusters
             else:
                 cluster_to_clear = self.opened_clusters
@@ -1525,7 +1548,7 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
             for cluster in cluster_to_clear:
                 cluster.clear(ignore_warning=True)
 
-        self.set_all_read_only(True)
+        self.set_all_readonly(True)
 
     def copyto(self, dst:str, cover = False):
         progress = tqdm(self.opened_clusters)
@@ -1542,12 +1565,12 @@ class DatasetFormat(WriteController, ABC, Generic[DST]):
     def open_all(self, value = True):
         self.close_all(not value)
 
-    def set_all_read_only(self, value = True):
+    def set_all_readonly(self, value = True):
         for obj in list(self.elements_map.values()) + list(self.jsondict_map.values()):
-            obj.set_read_only(value)
+            obj.set_readonly(value)
 
     def set_all_writeable(self, value = True):
-        self.set_all_read_only(not value)
+        self.set_all_readonly(not value)
 
     def get_element_paths_of_one(self, data_i:int):
         '''

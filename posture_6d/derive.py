@@ -43,9 +43,9 @@ def calc_masks(mesh_metas:list[MeshMeta], postures:list[Posture], intrinsics:Cam
     visib_fract: list[float]
     '''
     def draw_one_mask(meta:MeshMeta, posture:Posture):
-        CAM_WID, CAM_HGT    = intrinsics.CAM_WID, intrinsics.CAM_HGT # 重投影到的深度图尺寸
-        EPS = intrinsics.EPS
-        MAX_DEPTH = intrinsics.MAX_DEPTH
+        CAM_WID, CAM_HGT    = intrinsics.cam_wid, intrinsics.cam_hgt # 重投影到的深度图尺寸
+        EPS = intrinsics.eps
+        MAX_DEPTH = intrinsics.max_depth
         pc = meta.points_array #[N, 3]
         triangles = meta.tris_array #[T, 3]
         pc = posture * pc #变换
@@ -65,7 +65,7 @@ def calc_masks(mesh_metas:list[MeshMeta], postures:list[Posture], intrinsics:Cam
             new_pc_index[valid] = np.arange(np.sum(valid)).astype(np.int32)
             ### 绘制掩膜
             if not tri_mode:
-                mask[v, u] = 255
+                mask[tuple(pts[:, ::-1].T)] = 255
                 kernel_size = max(int((u.max() - u.min()) * (v.max() - v.min()) / u.shape[0]), 3)
                 kernel_size = kernel_size + 1 if kernel_size % 2 == 0 else kernel_size
                 mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, 

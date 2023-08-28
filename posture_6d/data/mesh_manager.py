@@ -42,18 +42,24 @@ class MeshMeta:
         if isinstance(posture, np.ndarray):
             posture = Posture(homomat=posture)
 
-        new_mesh = o3d.geometry.TriangleMesh(self.mesh)
-        new_mesh = new_mesh.transform(posture.trans_mat)
-
         new_bbox = posture * self.bbox_3d if self.bbox_3d is not None else None
         new_ldmk = posture * self.ldmk_3d if self.ldmk_3d is not None else None
 
         if copy:
+            new_mesh = o3d.geometry.TriangleMesh(self.mesh)
+            new_mesh = new_mesh.transform(posture.trans_mat)
+
             return MeshMeta(new_mesh, new_bbox, self.symmetries, self.diameter, new_ldmk, self.name, self.class_id)
         else:
-            self.mesh = new_mesh
-            self.bbox_3d = new_bbox
-            self.ldmk_3d = new_ldmk
+            self.mesh.transform(posture.trans_mat)
+            if new_bbox is not None:
+                self.bbox_3d[:] = new_bbox
+            else:
+                self.bbox_3d = None
+            if new_ldmk is not None:
+                self.ldmk_3d[:] = new_ldmk
+            else:
+                self.ldmk_3d = None
             return self
 
     def __repr__(self) -> str:

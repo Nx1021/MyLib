@@ -17,9 +17,9 @@ class PipeLine():
         #
         self.data_recorder = DataRecorder(self.directory)
         #
-        if self.data_recorder.aruco_floor_json.all_exits:
-            self.aruco_detector = ArucoDetector(self.data_recorder.aruco_floor_json.read()[0])
-        elif self.data_recorder.aruco_floor_png.all_exits:
+        if self.data_recorder.aruco_floor_json.all_exist:
+            self.aruco_detector = ArucoDetector(self.data_recorder.aruco_floor_json.read(0))
+        elif self.data_recorder.aruco_floor_png.all_exist:
             image, long_side = self.data_recorder.aruco_floor_png.read()
             self.aruco_detector = ArucoDetector(image, long_side)
         else:
@@ -30,7 +30,7 @@ class PipeLine():
         #
         self.pcd_creator = PcdCreator(self.data_recorder, self.aruco_detector, self.model_manager)
         #
-        # self.interact_icp = InteractIcp(self.data_recorder, self.model_manager)
+        self.interact_icp = InteractIcp(self.data_recorder, self.model_manager)
 
     def capture_image(self):
         is_recording_model = True
@@ -52,10 +52,13 @@ class PipeLine():
             self.capturing.start(func)
 
     def register_pcd(self):
-        pass
+        self.pcd_creator.register(downsample=False)
+
+    def segment_pcd(self):
+        self.pcd_creator.auto_seg()
 
     def icp(self):
-        pass    
+        self.interact_icp.start()
 
     def plot_captured(self):
         pass

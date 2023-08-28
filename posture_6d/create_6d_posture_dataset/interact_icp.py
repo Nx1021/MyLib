@@ -23,7 +23,7 @@ from .utils import homo_pad
 from .pcd_creator import ProcessData
 
 class MyGA(GA):
-    def __init__(self, func, n_dim, size_pop=50, max_iter=200, prob_mut=0.001, lb=-1, ub=1, constraint_eq=[], constraint_ueq=[], precision=1e-7, early_stop=None, result_precision = 0.01):
+    def __init__(self, func, n_dim, size_pop=50, max_iter=200, prob_mut=1, lb=-1, ub=1, constraint_eq=[], constraint_ueq=[], precision=1e-7, early_stop=None, result_precision = 0.01):
         super().__init__(func, n_dim, size_pop, max_iter, prob_mut, lb, ub, constraint_eq, constraint_ueq, precision, early_stop)
         self.result_precision = result_precision
 
@@ -62,14 +62,18 @@ class MyGA(GA):
     fit = run
 
 class ModelInfo(MeshMeta):
-    def __init__(self, mesh, name="", class_id=-1) -> None:
+    def __init__(self, mesh, name="", class_id=-1, barycenter:np.ndarray = None) -> None:
         super().__init__(mesh, None, None, None, None, name, class_id)
         self.pcd = o3d.geometry.PointCloud()
         self.pcd.points = mesh.vertices
         distances = self.pcd.compute_nearest_neighbor_distance()
         self.avg_dist = np.mean(distances)  # 点云密度
+        self.mesh.compute_vertex_normals()
         # 重心
-        self.barycenter = self.calc_barycenter(self.avg_dist*3)
+        if barycenter is None:
+            self.barycenter = self.calc_barycenter(self.avg_dist*3)
+        else:
+            self.barycenter = barycenter
 
     def calc_barycenter(self, voxel_size):
         voxelized = Voxelized.from_mesh(self.mesh, voxel_size)
@@ -98,7 +102,7 @@ class ModelBalencePosture():
         #     self.model_list.append(mi)
     
     def get_bary_vec(self, mi:ModelInfo, index):
-        point = mi.points[index]
+        point = mi.points_array[index]
         bary_vec = point - mi.barycenter
         bary_vec = (bary_vec.T/np.linalg.norm(bary_vec, axis=-1)).T
         return bary_vec
@@ -190,15 +194,15 @@ class ModelBalencePosture():
         in_poly = False
         if len(contact_index) == 1:
             index = contact_index[0]
-            points = mi.points[index]
+            points = mi.points_array[index]
             points = np.expand_dims(points, 0)
             lines = np.zeros((0,2,3))
         elif len(contact_index) == 2:
-            points = mi.points[(contact_index[0], contact_index[1]), :]
-            line = (mi.points[contact_index[0]] , mi.points[contact_index[1]])
+            points = mi.points_array[(contact_index[0], contact_index[1]), :]
+            line = (mi.points_array[contact_index[0]] , mi.points_array[contact_index[1]])
             lines = np.array([line])
         else:
-            contact_points = mi.points[contact_index]
+            contact_points = mi.points_array[contact_index]
             if contact_points.shape[0] >= 4:
             # 三个以及以上
                 hull = ConvexHull(contact_points[:, :2]) # 求凸包
@@ -290,11 +294,11 @@ class ModelBalencePosture():
         posture_t = Posture(tvec=drop_foot)
         T = np.linalg.multi_dot((posture_t.trans_mat, posture_r.trans_mat, posture_t.inv_transmat))
         # 试旋转，防止另一侧触点超过平面
-        homo_points = np.hstack((mi.points, np.ones((mi.points.shape[0], 1))))
+        homo_points = np.hstack((mi.points_array, np.ones((mi.points_array.shape[0], 1))))
         while True:
             try_fall_points = T.dot(homo_points.T).T[:, :3]
             min_index = np.argmin(try_fall_points[:, 2])
-            min_z_point_org = mi.points[min_index]
+            min_z_point_org = mi.points_array[min_index]
             min_z_point_new = try_fall_points[min_index]
             drop_foot_z = drop_foot[2]            
             if min_z_point_new[2] - drop_foot_z >= -5e-5:
@@ -334,7 +338,7 @@ class ModelBalencePosture():
 
     def get_contact_point(self, mi:ModelInfo):
         z_thre = 5e-5
-        all_points = mi.points.copy()
+        all_points = mi.points_array.copy()
         all_tri = np.array(mi.mesh.triangles) #[TRI, 3]
         z = all_points[:,2]
         low_points_global_idx = np.where(z-z.min() < z_thre)[0]
@@ -384,7 +388,7 @@ class ModelBalencePosture():
         contact_index = list(contact_dict.keys())
         contact_neighbor_index = list(contact_dict.values())
         # if len(contact_index) > 3:
-        #     colors = np.zeros(mi.points.shape)
+        #     colors = np.zeros(mi.points_array.shape)
         #     colors[np.hstack(contact_neighbor_index)] = np.array([255, 0, 0])
         #     colors[contact_index] = np.array([0, 0, 255])
         #     mi.pcd.colors = utility.Vector3dVector(colors)
@@ -407,7 +411,7 @@ class ModelBalencePosture():
             if np.any(normal_angle > bary_angle + self.POINT_STABLE_TOL):
                 return False #确保是稳定平衡
         elif len(contact_index) == 2:
-            line = mi.points[contact_index[0]] - mi.points[contact_index[1]]
+            line = mi.points_array[contact_index[0]] - mi.points_array[contact_index[1]]
             line = line / np.linalg.norm(line)
             neighbor_index = np.hstack(contact_neighbor_index).squeeze()
             ### 两点连线
@@ -432,7 +436,7 @@ class ModelBalencePosture():
             if np.any(normal_angle > bary_angle + self.POINT_STABLE_TOL):
                 return False #确保是稳定平衡
         else:
-            points = mi.points[contact_index]
+            points = mi.points_array[contact_index]
             if points.shape[0] >= 4:
             # 三个以及以上
                 hull = ConvexHull(points[:, :2]) # 求凸包
@@ -447,7 +451,7 @@ class ModelBalencePosture():
             bary_point = shapely.geometry.Point(bary[0], bary[1])
             if not poly_shape.intersects(bary_point):
                 return False
-        # colors = np.zeros(mi.points.shape)
+        # colors = np.zeros(mi.points_array.shape)
         # colors[np.hstack(contact_neighbor_index)] = np.array([255, 0, 0])
         # colors[contact_index] = np.array([0, 0, 255])
         # mi.pcd.colors = utility.Vector3dVector(colors)
@@ -488,12 +492,12 @@ class MaskBilter():
     SHOW_NUM = 6
     def __init__(self, data_recorder:DataRecorder) -> None:
         self.data_recorder = data_recorder
-        self.directory = directory
+        self.directory = data_recorder.directory
         # 视角变换矩阵
-        trans_mat_directory = os.path.join(directory, "transforms.npy")
-        self.transforms = np.load(trans_mat_directory) 
+        # trans_mat_directory = os.path.join(self.directory, "transforms.npy")
+        # self.transforms = np.load(trans_mat_directory) 
         # 类别范围
-        self.model_index_range = self.data_recorder.model_index_range
+        self.model_index_range = self.data_recorder.category_idx_range
         # 当前类别名
         self.__current_name = ""
         # 选取的视角
@@ -504,7 +508,7 @@ class MaskBilter():
         self.__view_pointer = 0
 
         # 相机内参
-        self.camera_intr = CameraIntr.from_json(os.path.join(directory, CALI_INTR_FILE))
+        self.camera_intr = CameraIntr.from_json(os.path.join(self.directory, CALI_INTR_FILE))
 
         plt.ion()
     
@@ -593,31 +597,31 @@ class MaskBilter():
         选择视角
         '''
         vectors = []
-        data_i_list = []
         cur_view_trans = []
+        frame_indecies = []
+        view_idx = []        
         for data_i in self.cur_range:
             T = self.data_recorder.trans_elements[data_i]
             end_points = T.dot(np.array([[0,0,0,0], [0,0,1,0]]).T).T #[2,4]
             vec = end_points[1] - end_points[0]
             vectors.append(vec)
-            data_i_list.append(data_i)
             cur_view_trans.append(T)
         cur_view_trans = np.array(cur_view_trans)
         vectors = np.array(vectors)[:,:3]
         view_wanted = np.array([[1,0,0], [-1, 0, 0],[0, 1, 0],[0, -1, 0], [-1.732/3, 1.732/3, -1.732/2], [0,0, -1]])
-        view_data_i = []
         for vw in view_wanted:
             vec1 = vectors
             vec2 = vw
             inner_product = np.sum(vec1 * vec2, axis=-1)/(np.linalg.norm(vec1, axis=-1) * np.linalg.norm(vec2, axis=-1))
             inner_product = np.clip(inner_product, -1, 1)
             angles = np.arccos(inner_product)
-            view_data_i.append(data_i_list[np.argmin(angles)])
+            view_idx.append(np.argmin(angles))
+            frame_indecies.append(self.cur_range[np.argmin(angles)])
         # # 最远点采样，选角度差距最大的点
         # _, view_index = MaskBilter.farthest_point_sample_angle(vectors, num)
-        view_data_i = np.array(view_data_i, dtype=np.int32)
-        self.selected_view_trans_mats = cur_view_trans[view_data_i, :, :]
-        self.selected_frame_indecies = view_data_i
+        view_idx = np.array(view_idx, dtype=np.int32)
+        self.selected_view_trans_mats = cur_view_trans[view_idx, :, :]
+        self.selected_frame_indecies = frame_indecies
 
     def read_rgbs(self):
         self.selected_rgbs.clear()
@@ -705,16 +709,21 @@ class MaskBilter():
             trans_mat = self.selected_view_trans_mats[i]
             rgb = self.selected_rgbs[i]
             masks, _ = calc_masks([std_model_meta],
-                                   [Posture(homomat=trans_mat)],
+                                   [Posture(homomat=trans_mat).inv()],
                                    self.camera_intr,
                                     ignore_depth= True,
                                     tri_mode= False)
-            bbox_max = np.array(np.where(masks[0])).max(axis=-1) + 5
-            bbox_max[0] = np.clip(bbox_max[0], 0, rgb.shape[0])
-            bbox_max[1] = np.clip(bbox_max[1], 0, rgb.shape[1])
-            bbox_min = np.array(np.where(masks[0])).min(axis=-1) - 5
-            bbox_min[0] = np.clip(bbox_min[0], 0, rgb.shape[0])
-            bbox_min[1] = np.clip(bbox_min[1], 0, rgb.shape[1])
+            mask = masks[0]
+            if np.max(mask) > 0:
+                bbox_max = np.array(np.where(mask)).max(axis=-1) + 5
+                bbox_max[0] = np.clip(bbox_max[0], 0, rgb.shape[0])
+                bbox_max[1] = np.clip(bbox_max[1], 0, rgb.shape[1])
+                bbox_min = np.array(np.where(mask)).min(axis=-1) - 5
+                bbox_min[0] = np.clip(bbox_min[0], 0, rgb.shape[0])
+                bbox_min[1] = np.clip(bbox_min[1], 0, rgb.shape[1])
+            else:
+                bbox_max = np.array([rgb.shape[0], rgb.shape[1]])
+                bbox_min = np.array([0, 0])
             
             mask = 255 - masks[0] #反
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
@@ -734,81 +743,59 @@ class MaskBilter():
 
 
 class InteractIcp():
-    def __init__(self, datarecorder: DataRecorder, model_manager: ModelManager) -> None:
-        self.data_recorder = datarecorder
+    def __init__(self, data_recorder: DataRecorder, model_manager: ModelManager) -> None:
+        self.data_recorder = data_recorder
         self.model_manager = model_manager
 
         self.std_meshes_dir = self.model_manager.std_meshes_dir
         self.std_models_mainname_list = self.model_manager.std_meshes_names
+        self.icp_trans_dir      = self.model_manager.icp_trans.directory
+        self.icp_unf_pcd_dir    = self.model_manager.icp_unf_pcd.directory
 
         # self.segmesh_dir = os.path.join(directory, SEGMESH_DIR)
         # self.segmesh_list = os.listdir(self.segmesh_dir)
         # self.icp_dir = os.path.join(directory, ICP_DIR)
         # self.regis_dir = os.path.join(directory, REGIS_DIR)
         ### scs
-        aruco_centers  = self.model_manager.process_data[ProcessData.ARUCO_CENTERS]
-        plane_equation = self.model_manager.process_data[ProcessData.PLANE_EQUATION]
-        trans_mat      = self.model_manager.process_data[ProcessData.TRANS_MAT_C0_2_SCS]
+        process_data = self.model_manager.process_data
+        aruco_centers  = process_data[ProcessData.ARUCO_CENTERS]
+        plane_equation = process_data[ProcessData.PLANE_EQUATION]
+        trans_mat      = process_data[ProcessData.TRANS_MAT_C0_2_SCS]
         ###
         # 读取所有的std和unf
         self.std_mi_list = []
         self.pcd_list = []  
         self.pcd_info_list = []
+        self.data_recorder.barycenter_dict.open()
+        self.data_recorder.barycenter_dict.set_writable()
         for name in self.std_models_mainname_list:
             mesh = self.model_manager.std_meshes.read(name)
-            mi = ModelInfo(mesh, name = name, class_id=self.model_manager.std_meshes.dulmap_id_name(name))
-            self.std_mi_list.append(mi)
+            barycenter = self.data_recorder.barycenter_dict[name]
+            std_mi = ModelInfo(mesh, 
+                               name = name, 
+                               class_id=self.model_manager.std_meshes.dulmap_id_name(name),
+                               barycenter=barycenter)
+            if name not in self.data_recorder.barycenter_dict:
+                self.data_recorder.barycenter_dict.write(name, std_mi.barycenter)
+            self.std_mi_list.append(std_mi)
 
-            pcd = self.model_manager.icp_unf_pcd.read(name)
-            if pcd is None:
-                pcd = self.model_manager.extracted_mesh.read(name)
-                if pcd is not None:
-                    pcd = mesh.sample_points_uniformly(int(np.asarray(std_mi.mesh.vertices).shape[0] * 1.2))
-                    print("创建" + unf_path)
-                    io.write_point_cloud(unf_path, pcd)
+            icp_unf_pcd = self.model_manager.icp_unf_pcd.read(name)
+            if icp_unf_pcd is None:
+                extracted_mesh = self.model_manager.extracted_mesh.read(name)
+                if extracted_mesh is not None:
+                    icp_unf_pcd = extracted_mesh.sample_points_uniformly(int(np.asarray(std_mi.mesh.vertices).shape[0] * 1.2))
                 else:
-                    pcd = self.model_manager.registerd_pcd.read(name)
+                    icp_unf_pcd = self.model_manager.registerd_pcd.read(name)
                     # trans_mat = build_sceneCS(aruco_centers, plane_equation, pcd)
                     # pcd.transform(np.linalg.inv(trans_mat))
-                    print("创建" + unf_path)
-                    io.write_point_cloud(unf_path, pcd)
-            
-
-        # 尝试读取utf 
-        for std_mi in self.std_mi_list:
-            mesh_name = std_mi.name
-            unf_path = os.path.join(self.icp_dir, "unf_" + mesh_name + ".ply")
-            seg_path = os.path.join(self.segmesh_dir, mesh_name + ".ply")
-            regis_path = os.path.join(self.regis_dir, mesh_name + ".ply")
-            if os.path.exists(unf_path):
-                pcd = io.read_point_cloud(unf_path)
-                # pcd.transform(np.linalg.inv(trans_mat))
-            elif os.path.exists(seg_path):
-                mesh = io.read_triangle_mesh(seg_path)
-                # pcd = mesh.sample_points_poisson_disk(int(np.asarray(std_mi.mesh.vertices).shape[0] * 1.2)) # 降采样
-                pcd = mesh.sample_points_uniformly(int(np.asarray(std_mi.mesh.vertices).shape[0] * 1.2))
-                print("创建" + unf_path)
-                io.write_point_cloud(unf_path, pcd)
-            elif os.path.exists(regis_path):
-                pcd = io.read_point_cloud(regis_path)
-                # trans_mat = build_sceneCS(aruco_centers, plane_equation, pcd)
-                # pcd.transform(np.linalg.inv(trans_mat))
-                print("创建" + unf_path)
-                io.write_point_cloud(unf_path, pcd)
-            else:
-                continue
+                print("创建:" + name)
+                self.model_manager.icp_unf_pcd.write(name, icp_unf_pcd)
             # 缩小
-            bbox_3d = np.array(pcd.get_axis_aligned_bounding_box().get_box_points())
-            # z_size = np.max(bbox_3d[:,2]) - np.min(bbox_3d[:,2])
-            org_z_max = np.max(bbox_3d[:,2])
-            # scale = (z_size - 0.001 * 2) / z_size
-            # center = pcd.get_center()
-            # pcd.scale(scale, center) 
-            # bbox_3d = np.array(pcd.get_axis_aligned_bounding_box().get_box_points())
-            # new_z_max = np.max(bbox_3d[:,2])
-            # pcd.transform(Posture(tvec=np.array([0,0,org_z_max - new_z_max])).trans_mat)           
-            self.pcd_list.append(pcd)
-            self.pcd_info_list.append({"z_max": org_z_max})
+            bbox_3d = np.array(icp_unf_pcd.get_axis_aligned_bounding_box().get_box_points())
+            org_z_max = np.max(bbox_3d[:,2])       
+            self.pcd_list.append(icp_unf_pcd)
+            self.pcd_info_list.append({"z_max": org_z_max})                
+        self.data_recorder.barycenter_dict.close()
 
         # 读取预先计算的各个物体的平衡姿态
         self.place_gen = None
@@ -818,8 +805,8 @@ class InteractIcp():
         self.step = 1.0
         self.refine_mode(None) #非精确模式
         self.color_g = InteractIcp.color_generator()
-        self.modelbalenceposture = ModelBalencePosture(directory)
-        self.std_model_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.040, origin=[0,0,0])
+        self.modelbalenceposture = ModelBalencePosture()
+        self.std_model_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=40, origin=[0,0,0])
         self.std_model_baryline = \
             o3d.geometry.TriangleMesh.create_arrow(cylinder_radius=0.002, cone_radius=0.004, 
                                                     cylinder_height=0.1,  cone_height=0.02).transform(
@@ -837,7 +824,7 @@ class InteractIcp():
         self.is_mask_visible = True
         self.trans_with_CCS = False
 
-        self.maskbilter = MaskBilter(directory)
+        self.maskbilter = MaskBilter(self.data_recorder)
 
         self.pre_progress()
 
@@ -918,10 +905,10 @@ class InteractIcp():
         contact_index = list(contact_dict.keys())
         contact_neighbor_index = np.hstack(list(contact_dict.values())).astype(np.int32)
         
-        points = np.array(self.current_std_mi.points)
+        points = np.array(self.current_std_mi.points_array)
         index = np.union1d(contact_index, contact_neighbor_index).astype(np.int32)
         points = points[index]
-        colors = np.zeros(self.current_std_mi.points.shape)
+        colors = np.zeros(self.current_std_mi.points_array.shape)
         colors[contact_neighbor_index] = np.array([255, 0, 0])
         colors[contact_index] = np.array([0, 0, 255])
         colors = colors[index]
@@ -961,9 +948,12 @@ class InteractIcp():
         vis.remove_geometry(self.std_model_frame)
         self.current_index += 1
         if self.current_std_mi is None:
+            self.model_manager.icp_std_mesh.close()
+            self.model_manager.icp_unf_pcd.close()
+            self.model_manager.icp_trans.close()
             print("已经结束，请手动关闭")
             return
-        self.std_model_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.040, origin=[0,0,0])
+        self.std_model_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=40, origin=[0,0,0])
         vis.add_geometry(self.current_pcd)
         vis.add_geometry(self.current_std_mi.mesh)
         vis.add_geometry(self.std_model_frame)
@@ -980,10 +970,10 @@ class InteractIcp():
         # path = os.path.join(self.std_meshes_dir, self.std_models_list[self.current_index])
         # org_std_pcd = io.read_point_cloud(path) #标准点云，找标准点云和估计点云最匹配的姿态
         transed_std_mesh = self.current_std_mi.mesh #transformed standard mesh
-        org_std_pcd = self.model_manager.std_meshes.read(self.current_index)
+        org_std_mesh = self.model_manager.std_meshes.read(self.current_index)
         # org_std_pcd.scale(0.001, np.array([0.0, 0, 0]))
         transed_std_points = np.array(transed_std_mesh.vertices) #点坐标
-        org_std_points = np.array(org_std_pcd.points)
+        org_std_points = np.array(org_std_mesh.vertices)
         
         # pad 1 to the last dimension
         N = org_std_points.shape[0]
@@ -1007,7 +997,7 @@ class InteractIcp():
         # return ModelInfo(name, 0, trans_mat_O2C0, points, tris)
 
     def current_std_mi_transform(self, vis, T):
-        self.current_std_mi.transform(T)  
+        self.current_std_mi.transform(T, False)  
         self.std_model_frame.transform(T)  
         self.cover_data_comfirm = False
         if vis is not None:
@@ -1069,27 +1059,27 @@ class InteractIcp():
         self.trans_with_obj_center(rotate, vis)
 
     def translate_X_inc(self, vis):
-        posture = Posture(tvec=np.array([self.step * 0.001, 0, 0]))
+        posture = Posture(tvec=np.array([self.step * 1, 0, 0]))
         self.trans_with_obj_center(posture, vis)
 
     def translate_Y_inc(self, vis):
-        posture = Posture(tvec=np.array([0, self.step * 0.001, 0]))
+        posture = Posture(tvec=np.array([0, self.step * 1, 0]))
         self.trans_with_obj_center(posture, vis)
     
     def translate_Z_inc(self, vis):
-        posture = Posture(tvec=np.array([0, 0, self.step * 0.001]))
+        posture = Posture(tvec=np.array([0, 0, self.step * 1]))
         self.trans_with_obj_center(posture, vis)
 
     def translate_X_dec(self, vis):
-        posture = Posture(tvec=np.array([-self.step * 0.001, 0, 0]))
+        posture = Posture(tvec=np.array([-self.step * 1, 0, 0]))
         self.trans_with_obj_center(posture, vis)
 
     def translate_Y_dec(self, vis):
-        posture = Posture(tvec=np.array([0, -self.step * 0.001, 0]))
+        posture = Posture(tvec=np.array([0, -self.step * 1, 0]))
         self.trans_with_obj_center(posture, vis)
     
     def translate_Z_dec(self, vis):
-        posture = Posture(tvec=np.array([0, 0, -self.step * 0.001]))
+        posture = Posture(tvec=np.array([0, 0, -self.step * 1]))
         self.trans_with_obj_center(posture, vis)
 
     def refine_mode(self, vis):
@@ -1108,7 +1098,7 @@ class InteractIcp():
         source.points = o3d.utility.Vector3dVector(np.asarray(self.current_std_mi.mesh.vertices))
         target = o3d.geometry.PointCloud()
         target.points = o3d.utility.Vector3dVector(np.asarray(self.current_pcd.points))
-        threshold = 0.002
+        threshold = 2
         icp = o3d.pipelines.registration.registration_icp(
                 source, target, threshold, np.eye(4, dtype = np.float32),
                 o3d.pipelines.registration.TransformationEstimationPointToPoint())
@@ -1121,7 +1111,7 @@ class InteractIcp():
     
     def nearest_points_mean_d(self):
         if self.ckt is not None:
-            find_point = self.current_std_mi.points
+            find_point = self.current_std_mi.points_array
             d, _ = self.ckt.query(find_point)  # 返回最近邻点的距离d和在数组中的顺序x
             # 允许对于高度较低的点存在误差
             # 对于超出平面的点给与惩罚
@@ -1154,17 +1144,17 @@ class InteractIcp():
                                     [np.sin(z_angle),     np.cos(z_angle),    0],
                                     [0,                   0,                  1]])
             std_center = self.current_std_mi.mesh.get_center()
-            t1_std_points = self.current_std_mi.points - std_center
+            t1_std_points = self.current_std_mi.points_array - std_center
             find_point = np.dot(local_rot, t1_std_points.T).T # 原点
             find_point = find_point + std_center + np.array([posture[0], posture[1], 0])
             if call_num % (size_pop) == 0:
                 print("-", end="")
             return self.nearest_points_mean_d()
-        ga = MyGA(func=func, n_dim=3, size_pop=size_pop, max_iter=max_iter, lb=[-0.002, -0.002, -np.pi/36], 
-                                                                            ub=[ 0.002,  0.002,  np.pi/36], 
-                                                                            precision=[ 0.0005, 0.0005, np.pi/360], 
+        ga = MyGA(func=func, n_dim=3, size_pop=size_pop, max_iter=max_iter, lb=[-2, -2, -np.pi/36], 
+                                                                            ub=[ 2,  2,  np.pi/36], 
+                                                                            precision=[ 0.5, 0.5, np.pi/360], 
                                                                             early_stop=4,
-                                                                            result_precision=0.001)
+                                                                            result_precision=1)
         best_x, best_y = ga.run()
         posture_local = Posture(rvec=np.array([0,0,best_x[2]]), tvec=np.array([best_x[0], best_x[1], 0]))
         self.trans_with_obj_center(posture_local, vis)
@@ -1181,7 +1171,7 @@ class InteractIcp():
             self.place_gen = None
             return
         self.current_std_mi_transform(vis, T)
-        min_z = np.min(self.current_std_mi.points[:,2])
+        min_z = np.min(self.current_std_mi.points_array[:,2])
         up_move_posture = Posture(tvec=np.array([0,0,-min_z]))
         self.current_std_mi_transform(vis, up_move_posture.trans_mat)
 
@@ -1192,11 +1182,8 @@ class InteractIcp():
         2) 平移到中心
         '''
         # 尝试读取变换矩阵，如果没有则仅平移至中心
-        T_path = os.path.join(self.icp_dir, self.std_models_mainname_list[self.current_index] + "_transform.npy")
-        if os.path.exists(T_path):
-            T = np.load(T_path)
-        else:
-            ## 平移到中心
+        T = self.model_manager.icp_trans.read(self.current_index)
+        if T is None:
             pcd_center = self.current_pcd.get_center()
             std_pcd_center = self.current_std_mi.mesh.get_center()
             T = Posture(tvec=pcd_center - std_pcd_center).trans_mat
@@ -1215,18 +1202,20 @@ class InteractIcp():
         trans_mat = self.get_O2C0()
         # points_ = trans_mat.dot(org_std_points_set.T).T
 
-        transform_path =  os.path.join(self.icp_dir, "{}_transform.npy".format(self.std_models_mainname_list[self.current_index]))
-        if os.path.exists(transform_path) and self.cover_data_comfirm == False:
-            print("文件已经存在，再次按下确认覆盖")
-            self.cover_data_comfirm = True
-            return False
+        try:
+            transform_path = self.model_manager.icp_trans.auto_path(self.current_index)
+        except:
+            pass
         else:
-            self.cover_data_comfirm = False
-            np.save(transform_path, trans_mat)
-            io.write_triangle_mesh( os.path.join(self.icp_dir, 
-                                        "std_{}.ply".format(self.std_models_mainname_list[self.current_index])),
-                                    self.current_std_mi.mesh)
-            return True
+            if self.cover_data_comfirm == False:
+                print("文件已经存在，再次按下确认覆盖")
+                self.cover_data_comfirm = True
+                return False       
+            else:               
+                self.cover_data_comfirm = False
+                self.model_manager.icp_trans.write(self.current_index, trans_mat, force=True)
+                self.model_manager.icp_std_mesh.write(self.current_index, self.current_std_mi.mesh, force=True)
+                return True
 
     def start(self):
         key_to_callback = {}
@@ -1253,17 +1242,20 @@ class InteractIcp():
         key_to_callback[ord("3")] = self.switch_to_trans_with_CCS
         key_to_callback[ord("4")] = self.set_is_mask_visible
 
-
         key_to_callback[ord("J")] = self.skip
         key_to_callback[ord("N")] = self.comfirm
-        key_to_callback[ord("K")] = self.GA_registration
+        # key_to_callback[ord("K")] = self.GA_registration
         key_to_callback[ord("M")] = self.auto_icp
-        key_to_callback[ord(",")] = self.place_step
+        # key_to_callback[ord(",")] = self.place_step
         key_to_callback[ord("O")] = self.show_bary_arrow
         key_to_callback[ord("L")] = self.next_view
-        frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.040, origin=[0,0,0])
-        table = o3d.geometry.TriangleMesh.create_box(0.7,0.7,0.0001).paint_uniform_color(np.array([0.0, 1.0, 1.0]))
-        table.transform(Posture(tvec=np.array([0,0,-0.0001])).trans_mat)
+
+        for key, func in key_to_callback.items():
+            print(f"press {chr(key)} : {func.__name__}")
+
+        frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=40, origin=[0,0,0])
+        table = o3d.geometry.TriangleMesh.create_box(700, 700 ,1.0).paint_uniform_color(np.array([0.0, 1.0, 1.0]))
+        table.transform(Posture(tvec=np.array([0,0,-1.0])).trans_mat)
         o3d.visualization.draw_geometries_with_key_callbacks([self.current_pcd, self.current_std_mi.mesh, 
                                                               self.std_model_frame, self.contact_pcd,
                                                               self.std_model_baryline,
