@@ -51,11 +51,11 @@ class PipeLine():
             self.capturing.rs_camera.intr.save_as_json(os.path.join(self.directory, "intrinsics_" + str(mode) + ".json"))
             self.capturing.start(func)
 
-    def register_pcd(self):
-        self.pcd_creator.register(downsample=False)
+    def register_pcd(self, update=False):
+        self.pcd_creator.register(downsample=False, update=update)
 
-    def segment_pcd(self):
-        self.pcd_creator.auto_seg()
+    def segment_pcd(self, update=False):
+        self.pcd_creator.auto_seg(update)
 
     def icp(self):
         self.interact_icp.start()

@@ -45,10 +45,10 @@ class PcdCreator():
         self.process_data = self.model_manager.process_data
         self.process_data.save_mode = JsonDict.SAVE_IMMIDIATELY
 
-        assert self.data_recorder.intr_0_file.all_exist, "intr_0_file must exist"
-        assert self.data_recorder.intr_1_file.all_exist, "intr_1_file must exist"
-        self.intr_0 = self.data_recorder.intr_0_file.read(0)
-        self.intr_1 = self.data_recorder.intr_1_file.read(0)
+        # assert self.data_recorder.intr_0_file.all_exist, "intr_0_file must exist"
+        # assert self.data_recorder.intr_1_file.all_exist, "intr_1_file must exist"
+        # self.intr_0 = self.data_recorder.intr_0_file.read(0)
+        # self.intr_1 = self.data_recorder.intr_1_file.read(0)
         
     def _register_post_process(self, originals:list[o3d.geometry.PointCloud]):
         """
@@ -95,59 +95,65 @@ class PcdCreator():
         # 降采样合并结果
         # mesh_pcd, _ = mesh_pcd.remove_statistical_outlier(20, 0.8)
         scenemerged_pcd = scenemerged_pcd.voxel_down_sample(voxel_size=self.voxel_size*2)
-        self.model_manager.merged_regist_pcd_file.write(0, scenemerged_pcd)
+        return scenemerged_pcd
 
-    def register(self, downsample = True):
-        raw_pcd_dict = {}
-        aruco_used_times = {}
-        for category_idx, framemeta in tqdm(self.data_recorder.read_in_category_range(0, -1)):
-            category_name = self.data_recorder.category_names[category_idx]
+    def register(self, downsample = True, update = False):
+        if update or len(self.model_manager.registerd_pcd) != len(self.model_manager.std_meshes):
+            raw_pcd_dict = {}
+            aruco_used_times = {}
+            for category_idx, framemeta in tqdm(self.data_recorder.read_in_category_range(0, -1)):
+                category_name = self.data_recorder.category_names[category_idx]
 
-            color   = framemeta.color
-            depth   = framemeta.depth
-            T       = framemeta.trans_mat_Cn2C0
-            intr_M  = framemeta.intr_M
-            
-            mask = np.zeros((color.shape[0], color.shape[1])).astype(np.bool_)
-            crop_rect_tl = (np.array(color.shape) * 0.25).astype(np.int32)
-            crop_rect_br = (np.array(color.shape) * 0.75).astype(np.int32)
-            mask[crop_rect_tl[0]: crop_rect_br[0], crop_rect_tl[1]: crop_rect_br[1]] = 1
-            mask = mask * depth.copy().astype(np.bool_)
-            depth = convert_depth_frame_to_pointcloud(depth, intr_M)
+                color   = framemeta.color
+                depth   = framemeta.depth
+                T       = framemeta.trans_mat_Cn2C0
+                intr_M  = framemeta.intr_M
+                
+                mask = np.zeros((color.shape[0], color.shape[1])).astype(np.bool_)
+                crop_rect_tl = (np.array(color.shape) * 0.25).astype(np.int32)
+                crop_rect_br = (np.array(color.shape) * 0.75).astype(np.int32)
+                mask[crop_rect_tl[0]: crop_rect_br[0], crop_rect_tl[1]: crop_rect_br[1]] = 1
+                mask = mask * depth.copy().astype(np.bool_)
+                depth = convert_depth_frame_to_pointcloud(depth, intr_M)
 
-            source = o3d.geometry.PointCloud()
-            source.points = o3d.utility.Vector3dVector(depth[mask>0])
-            source.colors = o3d.utility.Vector3dVector(color[mask>0][:, ::-1] / 255)
-            source = source.transform(T)
-            # o3d.visualization.draw_geometries([source], width=1280, height=720)
-            if downsample == True:
-                source = source.voxel_down_sample(voxel_size = self.voxel_size)
+                source = o3d.geometry.PointCloud()
+                source.points = o3d.utility.Vector3dVector(depth[mask>0])
+                source.colors = o3d.utility.Vector3dVector(color[mask>0][:, ::-1] / 255)
+                source = source.transform(T)
+                # o3d.visualization.draw_geometries([source], width=1280, height=720)
+                if downsample == True:
+                    source = source.voxel_down_sample(voxel_size = self.voxel_size)
+                    # source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius = self.voxel_size * 3, max_nn = 50))
                 # source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius = self.voxel_size * 3, max_nn = 50))
-            # source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius = self.voxel_size * 3, max_nn = 50))
-            raw_pcd_dict.setdefault(
-                  category_name, 
-                  []).append(source)
+                raw_pcd_dict.setdefault(
+                    category_name, 
+                    []).append(source)
+                
+                # statistic the used times of each aruco for each category
+                _, ids, _ = self.aruco_detector.detect_aruco_2d(color)
+                aruco_used_times.setdefault(category_name, {})
+                for id_ in ids:
+                    aruco_used_times[category_name].setdefault(id_, 0)
+                    aruco_used_times[category_name][id_] += 1
             
-            # statistic the used times of each aruco for each category
-            _, ids, _ = self.aruco_detector.detect_aruco_2d(color)
-            aruco_used_times.setdefault(category_name, {})
-            for id_ in ids:
-                aruco_used_times[category_name].setdefault(id_, 0)
-                aruco_used_times[category_name][id_] += 1
-        
-        self.process_data.write(ProcessData.ARUCO_USED_TIMES, aruco_used_times, force=True)
-        # post process
-        self.model_manager.registerd_pcd.open()
-        self.model_manager.registerd_pcd.set_writable()
-        for k, pcd_list in tqdm(raw_pcd_dict.items()):
-            singlemerged_pcd = self._register_post_process(pcd_list)[0]
-            # downsample
-            singlemerged_pcd = singlemerged_pcd.voxel_down_sample(voxel_size = self.voxel_size *2)
-            # write
-            name = k
-            self.model_manager.registerd_pcd.write(name, singlemerged_pcd)
-        self.model_manager.registerd_pcd.set_readonly()
-        self._merge_meshes()
+            self.process_data.write(ProcessData.ARUCO_USED_TIMES, aruco_used_times, force=True)
+            # post process
+            self.model_manager.registerd_pcd.open()
+            self.model_manager.registerd_pcd.set_writable()
+            for k, pcd_list in tqdm(raw_pcd_dict.items()):
+                singlemerged_pcd = self._register_post_process(pcd_list)[0]
+                # downsample
+                singlemerged_pcd = singlemerged_pcd.voxel_down_sample(voxel_size = self.voxel_size *2)
+                # write
+                name = k
+                self.model_manager.registerd_pcd.write(name, singlemerged_pcd)
+            self.model_manager.registerd_pcd.set_readonly()
+        if update or not self.model_manager.merged_regist_pcd_file.all_exist:
+            merged = self._merge_meshes()
+            self.model_manager.merged_regist_pcd_file.write(0, merged, force=True)
+
+        self.model_manager.close_all()
+        self.data_recorder.close_all()
     
     def match_segmesh_name(self, seg_polygons, SCStrans_mat):
         '''
@@ -285,6 +291,8 @@ class PcdCreator():
         self.model_manager.extracted_mesh.open()
         self.model_manager.extracted_mesh.set_writable()
         for name, comp in zip(self.model_manager.std_meshes_names , self.model_manager.voronoi_segpcd):
+            print(name)            
+            o3d.visualization.draw_geometries([comp], width=1280, height=720)
             # name:str = model_names[pcd_index]
             offset = 5
             floor_points, floor_point_colors, refine_vol = self._get_floor_points(comp)
@@ -294,7 +302,7 @@ class PcdCreator():
             comp = refine_vol.crop_point_cloud(comp) #裁剪
             comp.points = o3d.utility.Vector3dVector(np.vstack((np.array(comp.points), floor_points)))
             comp.colors = o3d.utility.Vector3dVector(np.vstack((np.array(comp.colors), floor_point_colors)))
-            print(name)
+
             # o3d.visualization.draw_geometries([comp], width=1280, height=720)       
             comp.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=5, max_nn=10))
             comp.orient_normals_towards_camera_location(np.mean(np.array(comp.points), axis = 0))
@@ -355,9 +363,9 @@ class PcdCreator():
         else:
             floor_color = self.process_data[self.process_data.FLOOR_COLOR]
 
-        if not os.path.exists(self.model_manager.voronoi_segpcd.directory):
+        if update or not os.path.exists(self.model_manager.voronoi_segpcd.directory):
             seged_pcds = self.match_segmesh_name(vor_polys_coord, trans_mat)
-        self.extract_uniform_pcd(trans_mat, floor_color)
+            self.extract_uniform_pcd(trans_mat, floor_color)
 
     def build_build_sceneCS(self, test_pcd):
         _C0_aruco_3d_dict = self.aruco_detector.C0_aruco_3d_dict
@@ -502,9 +510,11 @@ class PcdCreator():
         delta = max_values - min_values
         hue = np.zeros(rgb_normalized.shape[0])
         r,g,b = rgb_array[:,0], rgb_array[:,1], rgb_array[:,2]
+        np.seterr(divide='ignore', invalid='ignore')
         rc = (max_values-r) / delta
         gc = (max_values-g) / delta
         bc = (max_values-b) / delta
+        np.seterr(divide='warn', invalid='warn')
 
         _rm = r == max_values
         _gm = g == max_values

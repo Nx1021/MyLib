@@ -740,8 +740,6 @@ class MaskBilter():
             plt.imshow(show_image)
         # plt.show()
 
-
-
 class InteractIcp():
     def __init__(self, data_recorder: DataRecorder, model_manager: ModelManager) -> None:
         self.data_recorder = data_recorder
@@ -757,11 +755,37 @@ class InteractIcp():
         # self.icp_dir = os.path.join(directory, ICP_DIR)
         # self.regis_dir = os.path.join(directory, REGIS_DIR)
         ### scs
-        process_data = self.model_manager.process_data
-        aruco_centers  = process_data[ProcessData.ARUCO_CENTERS]
-        plane_equation = process_data[ProcessData.PLANE_EQUATION]
-        trans_mat      = process_data[ProcessData.TRANS_MAT_C0_2_SCS]
         ###
+
+        # 读取预先计算的各个物体的平衡姿态
+        self.place_gen = None
+        self.current_index = 0
+        self.pcd_visible = True
+        self.is_refine_mode = True
+        self.step = 1.0
+        self.refine_mode(None) #非精确模式
+        self.color_g = InteractIcp.color_generator()
+        self.modelbalenceposture = ModelBalencePosture()
+        self.std_model_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=40, origin=[0,0,0])
+        self.std_model_baryline = \
+            o3d.geometry.TriangleMesh.create_arrow(cylinder_radius=0.002, cone_radius=0.004, 
+                                                    cylinder_height=0.1,  cone_height=0.02).transform(
+                                                    Posture(rvec=np.array([0, np.pi, 0])).trans_mat)
+        self.baryline_visible = False
+        self.contact_pcd = o3d.geometry.PointCloud()
+        self.view_directions = [((1,0,0),(0,0,1)),((-1,0,0),(0,0,1)),
+                                ((0,1,0),(0,0,1)),((0,-1,0),(0,0,1)),
+                                ((0,0,1),(1,0,0)),((0,0,-1),(1,0,0))] #[(front, up)]
+        self.view_switch:int = 0 #int
+        self.ckt = None
+        self.cover_data_comfirm = False
+        # 相机视角
+        self.is_camera_mode = False
+        self.is_mask_visible = True
+        self.trans_with_CCS = False
+
+
+    def load_data(self):
         # 读取所有的std和unf
         self.std_mi_list = []
         self.pcd_list = []  
@@ -796,37 +820,6 @@ class InteractIcp():
             self.pcd_list.append(icp_unf_pcd)
             self.pcd_info_list.append({"z_max": org_z_max})                
         self.data_recorder.barycenter_dict.close()
-
-        # 读取预先计算的各个物体的平衡姿态
-        self.place_gen = None
-        self.current_index = 0
-        self.pcd_visible = True
-        self.is_refine_mode = True
-        self.step = 1.0
-        self.refine_mode(None) #非精确模式
-        self.color_g = InteractIcp.color_generator()
-        self.modelbalenceposture = ModelBalencePosture()
-        self.std_model_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=40, origin=[0,0,0])
-        self.std_model_baryline = \
-            o3d.geometry.TriangleMesh.create_arrow(cylinder_radius=0.002, cone_radius=0.004, 
-                                                    cylinder_height=0.1,  cone_height=0.02).transform(
-                                                    Posture(rvec=np.array([0, np.pi, 0])).trans_mat)
-        self.baryline_visible = False
-        self.contact_pcd = o3d.geometry.PointCloud()
-        self.view_directions = [((1,0,0),(0,0,1)),((-1,0,0),(0,0,1)),
-                                ((0,1,0),(0,0,1)),((0,-1,0),(0,0,1)),
-                                ((0,0,1),(1,0,0)),((0,0,-1),(1,0,0))] #[(front, up)]
-        self.view_switch:int = 0 #int
-        self.ckt = None
-        self.cover_data_comfirm = False
-        # 相机视角
-        self.is_camera_mode = False
-        self.is_mask_visible = True
-        self.trans_with_CCS = False
-
-        self.maskbilter = MaskBilter(self.data_recorder)
-
-        self.pre_progress()
 
     @staticmethod
     def color_generator():
@@ -1210,14 +1203,19 @@ class InteractIcp():
             if self.cover_data_comfirm == False:
                 print("文件已经存在，再次按下确认覆盖")
                 self.cover_data_comfirm = True
-                return False       
-            else:               
-                self.cover_data_comfirm = False
-                self.model_manager.icp_trans.write(self.current_index, trans_mat, force=True)
-                self.model_manager.icp_std_mesh.write(self.current_index, self.current_std_mi.mesh, force=True)
-                return True
+                return False                   
+        self.cover_data_comfirm = False
+        self.model_manager.icp_trans.write(self.current_index, trans_mat, force=True)
+        self.model_manager.icp_std_mesh.write(self.current_index, self.current_std_mi.mesh, force=True)
+        return True
 
     def start(self):
+        self.load_data()
+
+        self.maskbilter = MaskBilter(self.data_recorder)
+
+        self.pre_progress()
+
         key_to_callback = {}
         key_to_callback[ord("Q")] = self.rotate_X_inc
         key_to_callback[ord("W")] = self.rotate_X_dec

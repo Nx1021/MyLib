@@ -434,9 +434,9 @@ class Capturing():
         self.__rs_camera = rs_camera
 
         if rs_camera.mode == 0:
-            intr_json_dir = self.data_recorder.intr_0_file.files[0].path
+            intr_json_dir = list(self.data_recorder.intr_0_file.files.keys())[0]
         elif rs_camera.mode == 1:
-            intr_json_dir = self.data_recorder.intr_1_file.files[0].path
+            intr_json_dir = list(self.data_recorder.intr_1_file.files.keys())[0]
         else:
             raise Exception("rs_camera.mode is illegal")
         self.__rs_camera.intr.save_as_json(intr_json_dir)
@@ -488,7 +488,7 @@ class Capturing():
 
     def start(self, break_callback, record_gate = True):
         assert self.rs_camera is not None, "RsCamera is None"
-
+        self.data_recorder.open_all()
         self.record_gate = record_gate
 
         self.T_start = time.time() # 开始时间
@@ -523,6 +523,8 @@ class Capturing():
                     if is_recording_model == False:
                         is_recording_model = True
                         self.data_recorder.inc_idx()
+                        if self.data_recorder.current_category_index in self.data_recorder.skip_segs:
+                            skip = True
                         self.read_trans_mats()
                 if pushto_buffer_permitted:
                     self.process_buffer()
@@ -540,6 +542,8 @@ class Capturing():
         # self.data_recorder.save_record()
         cv2.destroyAllWindows()  # 关闭窗口
         self.rs_camera.pipeline.stop()
+
+        self.data_recorder.close_all()
 
     @property
     def is_waiting(self):

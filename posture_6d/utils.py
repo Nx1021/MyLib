@@ -137,9 +137,10 @@ class JsonIO():
             self._closed = value
 
         def open(self):
-            print("open JsonIO stream of {}".format(self.path))
+            # 
             if not self.closed:
                 return
+            print("open JsonIO stream of {}".format(self.path))
             if os.path.exists(self.path):
                 try:
                     with open(self.path, 'rb+') as f:
@@ -155,9 +156,9 @@ class JsonIO():
             self._closed = False         
 
         def close(self):
-            print("close JsonIO stream of {}".format(self.path))
             if self.closed:
                 return
+            print("close JsonIO stream of {}".format(self.path))
             self.save_buffer()
             with open(self.path, 'rb+') as f:
                 f.seek(-1, 2)
