@@ -14,6 +14,7 @@ import colorsys
 import os
 from scipy.optimize import linear_sum_assignment
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from .data_manager import DataRecorder, EnumElements, ModelManager, ProcessData
 from .aruco_detector import ArucoDetector
@@ -120,7 +121,7 @@ class PcdCreator():
                 source.points = o3d.utility.Vector3dVector(depth[mask>0])
                 source.colors = o3d.utility.Vector3dVector(color[mask>0][:, ::-1] / 255)
                 source = source.transform(T)
-                # o3d.visualization.draw_geometries([source], width=1280, height=720)
+                # o3d.alization.draw_geometries([source], width=1280, height=720)
                 if downsample == True:
                     source = source.voxel_down_sample(voxel_size = self.voxel_size)
                     # source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius = self.voxel_size * 3, max_nn = 50))
@@ -161,7 +162,7 @@ class PcdCreator():
 
         seg_polygons: N*[p, 3]
         '''
-        aruoc_voronoi = Aruco_Voronoi(self, SCStrans_mat)
+        aruco_voronoi = Aruco_Voronoi(self, SCStrans_mat)
 
         # regis_dir = os.path.join(directory, REGIS_DIR)
 
@@ -200,17 +201,18 @@ class PcdCreator():
         ### 原始点云的前处理
         model_pcds = [] #点云列表[M]
         model_pcds_dense = [] #点云密度列表[M] 用于估算面积
-        for i, pcd in enumerate(self.model_manager.registerd_pcd):
+        for i, pcd in tqdm(enumerate(self.model_manager.registerd_pcd), desc="original pointcloud preprocess"):
             pcd.transform(SCStrans_mat)
-            pcd = pcd.voxel_down_sample(voxel_size=0.001) #降采样，使得点云密度相等
+            pcd = pcd.voxel_down_sample(voxel_size=1) #降采样，使得点云密度相等
             name = self.model_manager.std_meshes_names[i]
-            pcd = aruoc_voronoi.crop_by_aruco_num(pcd, name)
+            # pcd = aruco_voronoi.crop_by_aruco_num(pcd, name)
             # pcd = aruoc_voronoi.crop(pcd, [0, 11, 6, 3])
             # o3d.visualization.draw_geometries([pcd], width=1280, height=720)   
             distances = pcd.compute_nearest_neighbor_distance()
             avg_dist = np.mean(distances) 
             model_pcds_dense.append(avg_dist)
             model_pcds.append(pcd)
+            # o3d.visualization.draw_geometries([pcd], width=1280, height=720)
 
         assert len(model_pcds) == len(o3d_vols)
         M = len(model_pcds)
@@ -257,6 +259,7 @@ class PcdCreator():
         # print("请检查是否匹配正确，如有错误请在{}目录下手动修改名称".format(VORONOI_SEGPCD_DIR))
         self.model_manager.voronoi_segpcd.open()
         self.model_manager.voronoi_segpcd.set_writable()
+        self.model_manager.voronoi_segpcd.set_overwrite_allowed(True)
         for model_id, vol in zip(interact.top_rank_slice, interact.o3d_vols):
             pcd = interact.model_pcds[model_id]
             name = interact.model_names[model_id]
@@ -268,7 +271,9 @@ class PcdCreator():
             self.model_manager.voronoi_segpcd.write(model_id, comp)
             # o3d.io.write_point_cloud(os.path.join(voronoi_seg_dir, name+".ply"), comp)
         # y = input("检查完毕请输入任意字符")
+        self.model_manager.voronoi_segpcd.set_overwrite_allowed(False)
         self.model_manager.voronoi_segpcd.set_readonly()
+        self.model_manager.voronoi_segpcd.close()
         return 
     
     def extract_uniform_pcd(self, SCStrans_mat, floor_color = None):
@@ -289,10 +294,11 @@ class PcdCreator():
         #     seged_pcds_dict.update({mainname: pcd})
 
         self.model_manager.extracted_mesh.open()
+        self.model_manager.voronoi_segpcd.open()
         self.model_manager.extracted_mesh.set_writable()
         for name, comp in zip(self.model_manager.std_meshes_names , self.model_manager.voronoi_segpcd):
             print(name)            
-            o3d.visualization.draw_geometries([comp], width=1280, height=720)
+            # o3d.visualization.draw_geometries([comp], width=1280, height=720)
             # name:str = model_names[pcd_index]
             offset = 5
             floor_points, floor_point_colors, refine_vol = self._get_floor_points(comp)
@@ -313,6 +319,8 @@ class PcdCreator():
 
             self.model_manager.extracted_mesh.write(name, mesh)
         self.model_manager.extracted_mesh.set_readonly()
+        self.model_manager.extracted_mesh.close()
+        self.model_manager.voronoi_segpcd.close()
 
     def auto_seg(self, update = False):
         '''
@@ -329,6 +337,12 @@ class PcdCreator():
                 self.process_data.PLANE_EQUATION not in self.process_data or \
                 self.process_data.TRANS_MAT_C0_2_SCS not in self.process_data:
             aruco_centers, plane_equation, trans_mat = self.build_build_sceneCS(org_pcd)
+            self.process_data.set_overwrite_allowed(True)
+            with self.process_data.writer:
+                self.process_data[self.process_data.ARUCO_CENTERS]      = aruco_centers
+                self.process_data[self.process_data.PLANE_EQUATION]     = plane_equation
+                self.process_data[self.process_data.TRANS_MAT_C0_2_SCS] = trans_mat
+            self.process_data.set_overwrite_allowed(False)
         else:
             aruco_centers = self.process_data[self.process_data.ARUCO_CENTERS]
             plane_equation = self.process_data[self.process_data.PLANE_EQUATION]
@@ -365,6 +379,7 @@ class PcdCreator():
 
         if update or not os.path.exists(self.model_manager.voronoi_segpcd.directory):
             seged_pcds = self.match_segmesh_name(vor_polys_coord, trans_mat)
+        if update or not os.path.exists(self.model_manager.extracted_mesh.directory):
             self.extract_uniform_pcd(trans_mat, floor_color)
 
     def build_build_sceneCS(self, test_pcd):
@@ -436,10 +451,11 @@ class PcdCreator():
         trans_mat_C0_2_SCS:np.ndarray = np.dot(frame_C0.T, np.linalg.inv(frame_scene.T))
         # 检查平面方向
         # pcd = test_pcd.transform(trans_mat_C0_2_SCS)
+        # o3d.visualization.SelectionPolygonVolume(test_pcd)
         points = np.array(test_pcd.points)
         points = trans_mat_C0_2_SCS.dot(np.hstack((points, np.ones((points.shape[0],1)))).T).T
-        z_minus = np.sum(points[:, 2] < -5)
-        z_plus  = np.sum(points[:, 2] > 5)
+        z_minus = np.sum(points[:, 2] < -10)
+        z_plus  = np.sum(points[:, 2] > 10)
         if z_plus < z_minus:
             r_mat = Posture(rvec=np.array([np.pi, 0, 0])).trans_mat
             trans_mat_C0_2_SCS = r_mat.dot(trans_mat_C0_2_SCS)
@@ -447,13 +463,6 @@ class PcdCreator():
         points = trans_mat_C0_2_SCS.dot(np.hstack((points, np.ones((points.shape[0],1)))).T).T
         z_minus = np.sum(points[:, 2] < -5)
         z_plus  = np.sum(points[:, 2] > 5)
-        
-        self.process_data.open()
-        self.process_data.set_writable()
-        self.process_data[self.process_data.ARUCO_CENTERS]      = aruco_centers
-        self.process_data[self.process_data.PLANE_EQUATION]     = plane_equation
-        self.process_data[self.process_data.TRANS_MAT_C0_2_SCS] = trans_mat_C0_2_SCS
-        self.process_data.set_readonly()
 
         return aruco_centers, plane_equation, trans_mat_C0_2_SCS
 
@@ -578,7 +587,7 @@ class PcdCreator():
     def _get_floor_points(pcd, band_height = 2, offset = 5):
         points = np.array(pcd.points)
         body = points[points[:, 2] > points[:, 2].max()*0.2]
-        rect_bias = 0.01 #矩形裁剪的偏移
+        rect_bias = 10 #矩形裁剪的偏移
         bounding_box = [[body[:,0].min() - rect_bias, body[:,1].min() - rect_bias, 0], 
                         [body[:,0].min() - rect_bias, body[:,1].max() + rect_bias, 0], 
                         [body[:,0].max() + rect_bias, body[:,1].max() + rect_bias, 0], 

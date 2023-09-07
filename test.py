@@ -1,6 +1,15 @@
+import time
+import numpy as np
 
-from posture_6d.data.dataset_format import Elements, E, DatasetFormat, LinemodFormat, _DataCluster
+a = np.array([])
+b = []
 
-_DataCluster(DatasetFormat(), "").format_obj.clear
-Elements(DatasetFormat(), "").format_obj
-E(DatasetFormat(), "").format_obj.clear
+start = time.time()
+for i in range(100000):
+    a = np.append(a, i)
+print("Numpy append: ", time.time() - start)
+
+start = time.time()
+for i in range(100000):
+    b.append(i)
+print("List append: ", time.time() - start)

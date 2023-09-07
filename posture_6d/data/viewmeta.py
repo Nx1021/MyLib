@@ -10,7 +10,7 @@ import io
 import copy
 import pickle
 from typing import Union, Any, Callable
-from . import Posture, CameraIntr, calc_bbox_3d_proj, calc_landmarks_proj, calc_masks, modify_class_id, get_meta_dict
+from . import Posture, CameraIntr, calc_bbox_2d_proj, calc_bbox_3d_proj, calc_landmarks_proj, calc_masks, modify_class_id, get_meta_dict
 from .mesh_manager import MeshMeta, get_bbox_connections
 import inspect
 import warnings
@@ -415,7 +415,6 @@ class ViewMeta():
             ViewMeta.PARA_NAMES[9]: ViewMeta.LabelsAP    
         }
         self.agmts:dict[str, AugmentPipeline] = {}
-        self.elements = {}
         self.ids = []
         self.color:np.ndarray               = self.set_element(ViewMeta.PARA_NAMES[0], color)
         self.depth:np.ndarray               = self.set_element(ViewMeta.PARA_NAMES[1], depth)
@@ -442,9 +441,16 @@ class ViewMeta():
         ViewMeta.IGNORE_WARNING = False
 
     def __setattr__(self, __name, __value):
-        if not ViewMeta.IGNORE_WARNING:
-            warnings.warn("WARNING: Setting properties directly is dangerous and may throw exceptions! make sure you know what you are doing", Warning)
+        # if not ViewMeta.IGNORE_WARNING:
+        #     warnings.warn("WARNING: Setting properties directly is dangerous and may throw exceptions! make sure you know what you are doing", Warning)
         super().__setattr__(__name, __value)
+
+    @property
+    def elements(self):
+        elements = {}
+        for name in ViewMeta.PARA_NAMES:
+            elements.update({name: self.__getattribute__(name)})
+        return elements
 
     @staticmethod
     def calc_bbox2d_from_mask(mask_dict:dict[int, np.ndarray]):
@@ -475,18 +481,21 @@ class ViewMeta():
 
     def filter_unvisible(self):
         ids = list(set(self.masks.keys()).union(set(self.visib_fract.keys())))
+        visible_ids = ids.copy()
         for id_ in ids:
             try: mask_cond = np.sum(self.masks[id_]) == 0
             except: mask_cond = False
             try: vf_cond = self.visib_fract[id_] == 0
             except: vf_cond = False
             if mask_cond or vf_cond:
+                visible_ids.remove(id_)
                 for value in self.elements.values():
                     if isinstance(value, dict):
                         try:
                             value.pop(id_)
                         except KeyError:
                             pass
+        return visible_ids
 
     def modify_class_id(self, modify_class_id_pairs:list[tuple[int]]):
         orig_dict_list = get_meta_dict(self)
@@ -494,36 +503,31 @@ class ViewMeta():
 
     @ignore_viewmeta_warning
     def calc_by_base(self, mesh_dict:dict[int, MeshMeta], cover = False):
+        def _calc_in_loop(keys:list[int], mesh_dict:dict[int, MeshMeta], postures:dict[int, Posture], camera_intr:CameraIntr, func:Callable):
+            _dict = {}
+            for k in keys:
+                _dict[k] = func(mesh_dict[k], postures[k], camera_intr)
+            return _dict
+
+
         assert self.color is not None
         assert self.extr_vecs is not None
         assert self.intr is not None
 
+        # get camera intr, postures
         camera_intr = CameraIntr(self.intr, self.color.shape[1], self.color.shape[0], self.depth_scale)
-        postures = []
-        mesh_list = []
+        postures_dict = {}
         keys = []
-        bbox_3d = {}
-        landmarks = {}
-        calc_bbox3d     = cover or self.bbox_3d is None
-        calc_landmarks  = cover or self.landmarks is None
         for key in self.extr_vecs:
             posture = Posture(rvec=self.extr_vecs[key][0], tvec=self.extr_vecs[key][1])
-            meshmeta = mesh_dict[key]
-            postures.append(posture)
-            mesh_list.append(meshmeta)
+            postures_dict[key] = posture
             keys.append(key)
-            if calc_bbox3d:
-                bbox_3d[key] = calc_bbox_3d_proj(meshmeta, posture, camera_intr)
-            if calc_landmarks:
-                landmarks[key] = calc_landmarks_proj(meshmeta, posture, camera_intr)
-        
-        if calc_bbox3d:
-            self.bbox_3d = bbox_3d
-        if calc_landmarks:
-            self.landmarks = landmarks
 
+        # calc masks and visib_fract
         if cover or self.masks is None or self.visib_fract is None:
-            masks, visib_fracts = calc_masks(mesh_list, postures, camera_intr, ignore_depth=True)
+            mesh_list = [mesh_dict[key] for key in keys]
+            posture_list = [postures_dict[key] for key in keys]
+            masks, visib_fracts = calc_masks(mesh_list, posture_list, camera_intr, ignore_depth=True)
 
             masks_dict = {}
             visib_fract_dict = {}
@@ -535,8 +539,20 @@ class ViewMeta():
                 self.masks = masks_dict
             if cover or self.visib_fract is None:
                 self.visib_fract = visib_fract_dict
-        
-        self.filter_unvisible()
+
+        # filter unvisible
+        visible_ids = self.filter_unvisible()
+
+        # calc bbox_3d, landmarks, labels
+        if cover or self.bbox_3d is None:
+            self.bbox_3d = _calc_in_loop(visible_ids, mesh_dict, postures_dict, camera_intr, calc_bbox_3d_proj)
+
+        if cover or self.landmarks is None:
+            self.landmarks = _calc_in_loop(visible_ids, mesh_dict, postures_dict, camera_intr, calc_landmarks_proj)
+
+        if cover or self.labels is None:
+            self.labels = _calc_in_loop(visible_ids, mesh_dict, postures_dict, camera_intr, calc_bbox_2d_proj)
+
 
     @staticmethod
     def from_base_data( color: np.ndarray, 
@@ -563,7 +579,6 @@ class ViewMeta():
                 self.ids = new_ids
             elif self.ids != new_ids:
                 raise ValueError("ids must be same")
-        self.elements[name] = value
 
         # set the value to the class
         ViewMeta.IGNORE_WARNING = True

@@ -7,9 +7,10 @@ import open3d as o3d
 import cv2
 import matplotlib.pyplot as plt
 import os
-from typing import Union
+from typing import Union, Iterable, TypeVar
 
 from .data.mesh_manager import MeshMeta
+# from .data.viewmeta import ViewMeta
 from .posture import Posture
 from .intr import CameraIntr
 
@@ -102,8 +103,8 @@ def calc_masks(mesh_metas:list[MeshMeta], postures:list[Posture], intrinsics:Cam
             min_depth = np.full((CAM_HGT, CAM_WID), MAX_DEPTH)
         return min_depth, orig_proj
 
-    depth_images = []
-    orig_proj_list = []
+    depth_images:list[np.ndarray] = []
+    orig_proj_list:list[np.ndarray] = []
     for meta, posture in zip(mesh_metas, postures):
         min_depth, orig_proj = draw_one_mask(meta, posture)
         depth_images.append(min_depth)
@@ -116,9 +117,9 @@ def calc_masks(mesh_metas:list[MeshMeta], postures:list[Posture], intrinsics:Cam
         mask[min_depth < min_depth.max()] = 255
         masks.append(mask)
     else:
-        depth_tensor = np.array(depth_images) #[N, H, W]
-        scene_mask = np.argmin(depth_tensor, axis=0)
-        back_ground = np.all(depth_tensor == intrinsics.MAX_DEPTH, axis=0)
+        depth_tensor:np.ndarray = np.array(depth_images) #[N, H, W]
+        scene_mask:np.ndarray = np.argmin(depth_tensor, axis=0)
+        back_ground:np.ndarray = np.all(depth_tensor == intrinsics.max_depth, axis=0)
         scene_mask[back_ground] = -1
         if reserve_empty:
             label_range = depth_tensor.shape[0] - 1
@@ -146,6 +147,49 @@ def calc_landmarks_proj(mesh_meta:MeshMeta, postures:Posture, intrinsics:CameraI
 def calc_bbox_3d_proj(mesh_meta:MeshMeta, postures:Posture, intrinsics:CameraIntr):
     bbox_3d = mesh_meta.bbox_3d
     return intrinsics * (postures * bbox_3d)
+
+def calc_bbox_2d_proj(mesh_meta:MeshMeta, postures:Posture, intrinsics:CameraIntr):
+    point_array = mesh_meta.points_array
+    proj = intrinsics * (postures * point_array)
+    # filter the points out of view
+    proj = intrinsics.filter_in_view(proj)
+    # bbox: [x1, y1, x2, y2]
+    bbox = np.array([np.min(proj[:,0]), np.min(proj[:,1]), np.max(proj[:,0]), np.max(proj[:,1])])
+    return bbox
+
+def cvt_by_intr(image:np.ndarray, 
+                cam_intr_1: Union[np.ndarray, CameraIntr],
+                cam_intr_2: Union[np.ndarray, CameraIntr],
+                new_image_shape:Iterable[int] = None):
+    '''
+    new_image_shape: (w, h)
+    '''
+    # assert isinstance(image, (np.ndarray, ViewMeta)), "image should be np.ndarray or ViewMeta, but got {}".format(type(image))
+    assert isinstance(cam_intr_1, (np.ndarray, CameraIntr)), "cam_intr_1 should be np.ndarray or CameraIntr, but got {}".format(type(cam_intr_1))
+    assert isinstance(cam_intr_2, (np.ndarray, CameraIntr)), "cam_imtr_2 should be np.ndarray or CameraIntr, but got {}".format(type(cam_intr_2))
+    if isinstance(cam_intr_2, np.ndarray) or cam_intr_2.cam_hgt == 0 or cam_intr_2.cam_wid == 0:
+        assert isinstance(new_image_shape, Iterable) and len(new_image_shape) == 2, \
+        "new_image_size should be Iterable and len(new_image_size) == 2, but got {}".format(new_image_shape)
+    else:
+        new_image_shape = (cam_intr_2.cam_wid, cam_intr_2.cam_hgt)
+
+    if isinstance(cam_intr_1, CameraIntr):
+        K1 = cam_intr_1.intr_M
+    else:
+        K1 = cam_intr_1
+    if isinstance(cam_intr_2, CameraIntr):
+        K2 = cam_intr_2.intr_M
+    else:
+        K2 = cam_intr_2
+
+    # 计算从图像1到图像2的透视变换矩阵（单应性矩阵）
+    H = K2.dot(np.linalg.inv(K1))
+
+    # 使用透视变换将图像1转换到图像2的坐标系
+    result_image = cv2.warpPerspective(image, H, new_image_shape) 
+
+    return result_image
+
 
 class PnPSolver():
     '''

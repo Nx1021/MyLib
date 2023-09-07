@@ -1,7 +1,7 @@
 from ..data import dataset_format
 from ..data import viewmeta
 from ..data.mesh_manager import MeshManager, MeshMeta, Voxelized
-from ..derive import calc_masks
+from ..derive import calc_masks, cvt_by_intr
 from ..posture import Posture, SphereAngle
 from ..intr import CameraIntr
 from ..data.dataset_format import *

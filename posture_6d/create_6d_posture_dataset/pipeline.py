@@ -5,7 +5,9 @@ from .capturing import Capturing, RsCamera
 from .data_manager import DataRecorder, ModelManager
 from .interact_icp import InteractIcp
 from .pcd_creator import PcdCreator
-from . import ARUCO_FLOOR, FRAMETYPE_DATA
+from . import ARUCO_FLOOR, FRAMETYPE_DATA, DatasetFormat, MeshManager, ViewMeta, Posture, MeshMeta, CameraIntr, cvt_by_intr
+
+from typing import Union
 
 class PipeLine():
     def __init__(self, dataset_name, sub_dir) -> None:
@@ -31,6 +33,10 @@ class PipeLine():
         self.pcd_creator = PcdCreator(self.data_recorder, self.aruco_detector, self.model_manager)
         #
         self.interact_icp = InteractIcp(self.data_recorder, self.model_manager)
+
+    @property
+    def data_num(self):
+        return self.data_recorder.data_num
 
     def capture_image(self):
         is_recording_model = True
@@ -59,6 +65,30 @@ class PipeLine():
 
     def icp(self):
         self.interact_icp.start()
+
+    def export_data(self, mesh_manager:Union[MeshManager, dict[int, MeshMeta]], cvt_intr:CameraIntr = None):
+        if isinstance(mesh_manager, MeshManager):
+            mmd = mesh_manager.get_meta_dict()
+        elif isinstance(mesh_manager, dict):
+            mmd = mesh_manager
+        for framemeta in self.data_recorder:
+            color = framemeta.color
+            depth = framemeta.depth
+            intr_M = framemeta.intr_M["intr_M"]
+            if cvt_intr is not None:
+                assert isinstance(cvt_intr, CameraIntr), "cvt_intr must be CameraIntr"
+                color = cvt_by_intr(color, intr_M, cvt_intr)
+                depth = cvt_by_intr(depth, intr_M, cvt_intr)
+                intr_M = cvt_intr.intr_M
+            ds = framemeta.intr_M["depth_scale"]
+            trans_mat_Cn2W = framemeta.trans_mat_Cn2C0
+            extr = {}
+            for data_i, T_O_2_W in self.model_manager.icp_trans.items():
+                Posture_O_2_Cn = Posture(homomat=np.linalg.inv(trans_mat_Cn2W).dot(T_O_2_W))
+                extr[data_i] = np.array([Posture_O_2_Cn.rvec, Posture_O_2_Cn.tvec])
+            viewmeta = ViewMeta(color, depth, None, extr, intr_M, ds, None, None, None, None)
+            viewmeta.calc_by_base(mmd, True)
+            yield viewmeta
 
     def plot_captured(self):
         pass

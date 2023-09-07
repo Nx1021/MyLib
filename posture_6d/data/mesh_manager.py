@@ -76,8 +76,13 @@ class MeshManager:
     def __init__(self, root, model_names: dict[int, str] = {}, load_all = False, modify_class_id_pairs:list[tuple[int]]=[]) -> None:
         self.root = root
         self.model_names: dict[int, str] = model_names
+        self.__model_name_json = os.path.join(self.root, "models_name.json")
         self.model_dirs : dict[int, str] = {}
         if len(model_names) > 0:
+            model_src = self.model_names.items()
+            JsonIO.dump_json(self.__model_name_json, self.model_names)
+        elif os.path.exists(self.__model_name_json):
+            self.model_names = JsonIO.load_json(self.__model_name_json)
             model_src = self.model_names.items()
         else:
             model_src = enumerate([x for x in os.listdir(self.root) if os.path.splitext(x)[-1] == ".ply"])

@@ -33,29 +33,29 @@ def bounded_voronoi(bnd, pnts, plot = False):
         i_cell = bnd_poly.intersection(Polygon(vor_poly))
         # 存储考虑封闭空间的Voronoi区域的顶点坐标
         vor_polys.append(list(i_cell.exterior.coords[:-1]))
-    # if plot:
-    # ボロノイ図の描画
-    fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_subplot(111)
+    if plot:
+        # ボロノイ図の描画
+        fig = plt.figure(figsize=(7, 6))
+        ax = fig.add_subplot(111)
 
-    # 母点
-    ax.scatter(pnts[:,0], pnts[:,1])
+        # 母点
+        ax.scatter(pnts[:,0], pnts[:,1])
 
-    # # ボロノイ領域
-    # poly_vor = PolyCollection(vor_polys, edgecolor="black",
-    #                         facecolors="None", linewidth = 1.0)
-    # ax.add_collection(poly_vor)
+        # ボロノイ領域
+        poly_vor = PolyCollection(vor_polys, edgecolor="black",
+                                facecolors="None", linewidth = 1.0)
+        ax.add_collection(poly_vor)
 
-    # xmin = np.min(bnd[:,0])
-    # xmax = np.max(bnd[:,0])
-    # ymin = np.min(bnd[:,1])
-    # ymax = np.max(bnd[:,1])
+        xmin = np.min(bnd[:,0])
+        xmax = np.max(bnd[:,0])
+        ymin = np.min(bnd[:,1])
+        ymax = np.max(bnd[:,1])
 
-    # ax.set_xlim(xmin-0.1, xmax+0.1)
-    # ax.set_ylim(ymin-0.1, ymax+0.1)
-    # ax.set_aspect('equal')
+        ax.set_xlim(xmin-0.1, xmax+0.1)
+        ax.set_ylim(ymin-0.1, ymax+0.1)
+        ax.set_aspect('equal')
 
-    # plt.show()
+        plt.show()
     return vor_polys
 
 def get_seg_maps(floor_slice_map, restore_mat, scale = 1000, model_num = 9):

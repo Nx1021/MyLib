@@ -418,8 +418,8 @@ class Capturing():
                 img = np.zeros((480, 640, 3), np.uint8)
             self.obj_exanple_img_dict.update({name: img})
 
-        self.aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_250)
-        self.parameters = aruco.DetectorParameters_create()
+        self.aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_6X6_250)
+        self.parameters = aruco.DetectorParameters()
         self.ignore_stable = False
 
         self.__rs_camera = rs_camera
