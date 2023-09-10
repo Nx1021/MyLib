@@ -32,40 +32,40 @@ class CommonData(DatasetFormat[DST]):
                                 read_func=cv2.imread,
                                 write_func=cv2.imwrite,
                                 suffix='.jpg')
-        self.aruco_floor_json       = FileCluster(self, "../", True,
-                                                  FileCluster.SingleFile(ARUCO_FLOOR + ".json", 
+        self.aruco_floor_json       = FileCluster(self, "../", True, name="aruco_floor_json",
+                                                  singlefile_list = [FileCluster.SingleFile(ARUCO_FLOOR + ".json", 
                                                                             JsonIO.load_json, 
-                                                                            JsonIO.dump_json))
-        self.aruco_floor_png        = FileCluster(self, "../", True,
-                                                  FileCluster.SingleFile(ARUCO_FLOOR + ".png", 
+                                                                            JsonIO.dump_json)])
+        self.aruco_floor_png        = FileCluster(self, "../", True, name="aruco_floor_png",
+                                                  singlefile_list = [FileCluster.SingleFile(ARUCO_FLOOR + ".png", 
                                                                             cv2.imread, 
                                                                             cv2.imwrite),
                                                   FileCluster.SingleFile(ARUCO_FLOOR + "_long_side.txt",
                                                                             np.loadtxt,
-                                                                            np.savetxt))
+                                                                            np.savetxt)])
 
         self.std_meshes_dir = self.std_meshes.directory
         self.std_meshes_names:list = []
         for i in range(len(self.std_meshes)):
             self.std_meshes_names.append(self.std_meshes.auto_path(i, return_app=True)[-1])
 
-        self.imu_calibration        = FileCluster(self, "../", True,
-                                                  FileCluster.SingleFile("imu_calibration.json", 
+        self.imu_calibration        = FileCluster(self, "../", True, name="imu_calibration",
+                                                  singlefile_list = [FileCluster.SingleFile("imu_calibration.json", 
                                                                             JsonIO.load_json, 
-                                                                            JsonIO.dump_json))
+                                                                            JsonIO.dump_json)])
         
         self.barycenter_dict        = JsonDict(self, "../std_meshes/barycenter.json", False)
         self.barycenter_dict.save_mode = JsonDict.SAVE_IMMIDIATELY
 
 
 class EnumElements(Elements[CommonData, Any]):
-    # def __init__(self, format_obj: "ModelManager", sub_dir, register=True, read_func = ..., write_func = ..., suffix: str = '.txt', filllen=6, fillchar='0') -> None:
-    #     super().__init__(format_obj, sub_dir, register, read_func, write_func, suffix, filllen, fillchar)
-    #     self.format_obj:ModelManager = format_obj    
+    # def __init__(self, dataset_node: "ModelManager", sub_dir, register=True, read_func = ..., write_func = ..., suffix: str = '.txt', filllen=6, fillchar='0') -> None:
+    #     super().__init__(dataset_node, sub_dir, register, read_func, write_func, suffix, filllen, fillchar)
+    #     self.dataset_node:ModelManager = dataset_node    
 
     @property
     def enums(self):
-        return self.format_obj.std_meshes_names
+        return self.dataset_node.std_meshes_names
 
     def format_path(self, enum:Union[str, int], appdir="", appname="", **kw):
         if isinstance(enum, (np.intc, np.integer)):
@@ -138,14 +138,14 @@ class DataRecorder(CommonData[FrameMeta]):
                                        write_func=np.save,
                                        suffix='.npy')
         
-        self.intr_0_file = FileCluster(self, "./", True,
-                                  FileCluster.SingleFile("intrinsics_0.json",
+        self.intr_0_file = FileCluster(self, "./", True, name="intr_0_file",
+                                    singlefile_list = [FileCluster.SingleFile("intrinsics_0.json",
                                                             JsonIO.load_json,
-                                                            JsonIO.dump_json))
-        self.intr_1_file = FileCluster(self, "./", True,
-                                    FileCluster.SingleFile("intrinsics_1.json",
+                                                            JsonIO.dump_json)])
+        self.intr_1_file = FileCluster(self, "./", True, name="intr_1_file",
+                                    singlefile_list = [FileCluster.SingleFile("intrinsics_1.json",
                                                             JsonIO.load_json,
-                                                            JsonIO.dump_json))
+                                                            JsonIO.dump_json)])
 
         self.close_all(False)
         self.set_all_readonly(False)
@@ -262,7 +262,7 @@ class DataRecorder(CommonData[FrameMeta]):
 class ElementsWithCategory(Elements[DataRecorder, np.ndarray]):
     @property
     def current_category_range(self):
-        return self.format_obj.category_idx_range[self.format_obj.current_category_name]
+        return self.dataset_node.category_idx_range[self.dataset_node.current_category_name]
 
     def in_current_category(self):
         try:
@@ -308,10 +308,10 @@ class ModelManager(CommonData):
                                         write_func=o3d.io.write_point_cloud,
                                         suffix='.ply')        
         
-        self.merged_regist_pcd_file = FileCluster(self, "", False, 
-                                                   FileCluster.SingleFile("merged.ply",
+        self.merged_regist_pcd_file = FileCluster(self, "", False, name="merged_regist_pcd_file",
+                                                    singlefile_list = [FileCluster.SingleFile("merged.ply",
                                                                                    read_func = o3d.io.read_point_cloud,
-                                                                                   write_func= o3d.io.write_point_cloud))
+                                                                                   write_func= o3d.io.write_point_cloud)])
 
         self.process_data = ProcessData(self, register = False)
     
@@ -331,8 +331,8 @@ class ProcessData(JsonDict[ModelManager, dict[str, np.ndarray]]):
     VOR_POLYS_COORD = "vor_polys_coord"
     FLOOR_COLOR = "floor_color"
 
-    def __init__(self, format_obj: DatasetFormat, sub_dir: str = "process_data.json", register=False) -> None:
-        super().__init__(format_obj, sub_dir, register)
+    def __init__(self, dataset_node: DatasetFormat, sub_dir: str = "process_data.json", register=False) -> None:
+        super().__init__(dataset_node, sub_dir, register)
 
     def check_key(self, key):
         super().check_key(key)

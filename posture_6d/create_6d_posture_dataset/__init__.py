@@ -2,11 +2,11 @@ from ..data import dataset_format
 from ..data import viewmeta
 from ..data.mesh_manager import MeshManager, MeshMeta, Voxelized
 from ..derive import calc_masks, cvt_by_intr
-from ..posture import Posture, SphereAngle
-from ..intr import CameraIntr
+from ..core.posture import Posture, SphereAngle
+from ..core.intr import CameraIntr
 from ..data.dataset_format import *
 from ..data.viewmeta import ViewMeta
-from ..utils import JsonIO
+from ..core.utils import JsonIO
 
 RGB_DIR     = LinemodFormat.RGB_DIR
 MASK_DIR    = LinemodFormat.MASK_DIR

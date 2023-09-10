@@ -8,7 +8,7 @@ import cv2
 import json
 import scipy.spatial as spt
 from sko.GA import GA
-from MyLib.posture_6d.posture import Posture
+from posture_6d.core.posture import Posture
 import sys
 import glob
 import re

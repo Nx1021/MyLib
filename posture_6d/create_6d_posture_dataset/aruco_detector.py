@@ -23,7 +23,7 @@ import sys
 import json
 import png
 # from excude_pipeline import *
-from MyLib.posture_6d.posture import Posture
+from posture_6d.core.posture import Posture
 # from utils.plane import findplane, fitplane, point_to_plane, findplane_wo_outliers
 import matplotlib.pyplot as plt
 from sko.GA import GA

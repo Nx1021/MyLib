@@ -7,12 +7,13 @@ import open3d as o3d
 import cv2
 import matplotlib.pyplot as plt
 import os
-from typing import Union, Iterable, TypeVar
+from typing import Union, Iterable, TypeVar, Callable
 
 from .data.mesh_manager import MeshMeta
+from .data.viewmeta import ViewMeta, ignore_viewmeta_warning
 # from .data.viewmeta import ViewMeta
-from .posture import Posture
-from .intr import CameraIntr
+from .core.posture import Posture
+from .core.intr import CameraIntr
 
 def inv_proj(intr_M:np.ndarray, pixels:np.ndarray, depth:float):
     '''
@@ -189,6 +190,58 @@ def cvt_by_intr(image:np.ndarray,
     result_image = cv2.warpPerspective(image, H, new_image_shape) 
 
     return result_image
+
+@ignore_viewmeta_warning
+def calc_viewmeat_by_base(viewmeta:ViewMeta, mesh_dict:dict[int, MeshMeta], cover = False):
+
+    def _calc_in_loop(keys:list[int], mesh_dict:dict[int, MeshMeta], postures:dict[int, Posture], camera_intr:CameraIntr, func:Callable):
+        _dict = {}
+        for k in keys:
+            _dict[k] = func(mesh_dict[k], postures[k], camera_intr)
+        return _dict
+
+    assert viewmeta.color is not None
+    assert viewmeta.extr_vecs is not None
+    assert viewmeta.intr is not None
+
+    # get camera intr, postures
+    camera_intr = CameraIntr(viewmeta.intr, viewmeta.color.shape[1], viewmeta.color.shape[0], viewmeta.depth_scale)
+    postures_dict = {}
+    keys = []
+    for key in viewmeta.extr_vecs:
+        posture = Posture(rvec=viewmeta.extr_vecs[key][0], tvec=viewmeta.extr_vecs[key][1])
+        postures_dict[key] = posture
+        keys.append(key)
+
+    # calc masks and visib_fract
+    if cover or viewmeta.masks is None or viewmeta.visib_fract is None:
+        mesh_list = [mesh_dict[key] for key in keys]
+        posture_list = [postures_dict[key] for key in keys]
+        masks, visib_fracts = calc_masks(mesh_list, posture_list, camera_intr, ignore_depth=True)
+
+        masks_dict = {}
+        visib_fract_dict = {}
+        for key, mask, visib_fract in zip(keys, masks, visib_fracts):
+            masks_dict[key] = mask
+            visib_fract_dict[key] = visib_fract
+
+        if cover or viewmeta.masks is None:
+            viewmeta.masks = masks_dict
+        if cover or viewmeta.visib_fract is None:
+            viewmeta.visib_fract = visib_fract_dict
+
+    # filter unvisible
+    visible_ids = viewmeta.filter_unvisible()
+
+    # calc bbox_3d, landmarks, labels
+    if cover or viewmeta.bbox_3d is None:
+        viewmeta.bbox_3d = _calc_in_loop(visible_ids, mesh_dict, postures_dict, camera_intr, calc_bbox_3d_proj)
+
+    if cover or viewmeta.landmarks is None:
+        viewmeta.landmarks = _calc_in_loop(visible_ids, mesh_dict, postures_dict, camera_intr, calc_landmarks_proj)
+
+    if cover or viewmeta.labels is None:
+        viewmeta.labels = _calc_in_loop(visible_ids, mesh_dict, postures_dict, camera_intr, calc_bbox_2d_proj)
 
 
 class PnPSolver():
