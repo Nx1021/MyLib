@@ -236,7 +236,7 @@ class DataRecorder(CommonData[FrameMeta]):
         data_i = self.data_i_upper
         self.write_one(data_i, framemeta)
 
-    def delete(self, delete_list:list, change_file = True):
+    def remove(self, remove_list:list, change_file = True):
         pass
 
     def insert(self, insert_list:list, change_file = True):
