@@ -1,0 +1,22 @@
+{
+    "executionEnvironments": [
+        {
+            "name": "MyEnv",
+            "python": "/path/to/your/python/interpreter",
+            "vendoredPyright": true,
+            "extraPaths": [
+                "./src",
+                "./lib"
+            ]
+        }
+    ],
+    "include": [
+        "src/**/*.py",
+        "tests/**/*.py"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        ".vscode"
+    ],
+    "reportGeneralTypeIssues": "none"
+}

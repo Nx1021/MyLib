@@ -1523,7 +1523,7 @@ class Elements(_DataCluster[DSNT, VDCT, "Elements"]):
                 filllen = 6, 
                 fillchar = '0', *,
                 alternative_suffix:list[str] = []) -> None:
-        # _cvt_old_element_map(dataset_node, sub_dir, suffix)
+        _cvt_old_element_map(dataset_node, sub_dir, suffix)
         super().__init__(dataset_node, sub_dir, register, name, 
                          read_func, write_func, suffix, filllen, fillchar, alternative_suffix = alternative_suffix)
         # self-check
@@ -2920,6 +2920,7 @@ class VocFormat(PostureDatasetFormat):
             return labels         
         
         def _write_format(self, labels: np.ndarray, image_size = None):
+            labels = labels.astype(np.float32)
             if image_size is not None:
                 bbox_2d = labels[:,1:].astype(np.float32) #[cx, cy, w, h]
                 bbox_2d = VocFormat._x1y1x2y2_2_normedcxcywh(bbox_2d, image_size)

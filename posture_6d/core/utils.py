@@ -8,6 +8,7 @@ from typing import Any
 import time
 import io
 import re
+import pickle
 import warnings
 
 from typing import Generic, TypeVar, Union, Callable, Iterable, Type
@@ -69,6 +70,26 @@ def extract_doc(doc:str, title:str):
     sub_doc = sub_doc[:idx]
     return sub_doc
 
+def serialize_object(file_path, obj):
+    # if os.path.splitext(file_path)[1] == '.pkl':
+    #     file_path = os.path.splitext(file_path)[0] + ".npz"
+    # np.savez(file_path, **obj)
+    with open(file_path, 'wb') as file:
+        pickle.dump(obj, file)
+
+# 从文件反序列化对象
+def deserialize_object(serialized_file_path):
+    with open(serialized_file_path, 'rb') as file:
+        elements = pickle.load(file)
+        return elements
+
+def read_file_as_str(file_path):
+    with open(file_path, 'r') as file:
+        return file.read()
+    
+def write_str_to_file(file_path, string):
+    with open(file_path, 'w') as file:
+        file.write(string)
 
 def _ignore_warning(func, category = Warning):
     def warpper(*args, **kwargs):
@@ -625,6 +646,11 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         table.update(table_dict)
         return table
     
+    @staticmethod
+    def to_json(path, table:"Table"):
+        table_dict = table.data
+        JsonIO.dump_json(path, table_dict)
+
     def save(self, path):
         JsonIO.dump_json(path, self.__data)
 
