@@ -988,7 +988,7 @@ class JsonDict(_DataCluster[DSNT, VDCT, "JsonDict"], dict):
     def values(self):
         super().values()
         return dict.values(self)
-    
+
     def items(self):
         super().items()
         return dict.items(self)
@@ -1065,7 +1065,6 @@ class JsonDict(_DataCluster[DSNT, VDCT, "JsonDict"], dict):
         else:
             raise TypeError(f"unsupported type: {type(k)} in src")
         self.log_to_mark_file(self.cluster_data_i_upper - 1, self.LOG_APPEND)
-
 
     def __iter__(self) -> Iterator:
         return _DataCluster.__iter__(self)

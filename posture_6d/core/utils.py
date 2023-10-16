@@ -387,21 +387,39 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
     print(table.get_row("Row1"))  # 输出: {'Name': ['Alice'], 'Age': []}
 
     '''
+
+    KW_EMPTY = "empty"
+    KW_row_names = "row_names"
+    KW_col_names = "col_names"
+    KW_default_value_type = "default_value_type"
+    KW_row_name_type = "row_name_type"
+    KW_col_name_type = "col_name_type"
+    KW_data = "data"
+
     def __init__(self, row_names:list[ROWKEYT] = None, col_names:list[COLKETT] = None, default_value_type:type[ITEM] = None,
                  *, 
                  row_name_type = str, 
-                 col_name_type = str):
+                 col_name_type = str,
+                 data:dict = None):
         self.__data:dict[ROWKEYT, dict[COLKETT, ITEM]] = {}
         self.__row_names:list[ROWKEYT] = []
         self.__col_names:list[COLKETT] = []
         self.__default_value_type = default_value_type
-        self.__row_name_type:Type[ROWKEYT] = row_name_type
-        self.__col_name_type:Type[COLKETT] = col_name_type
+        data = {} if data is None else data
+        assert isinstance(data, dict), "data must be a dict"
+        if len(data) > 0:
+            row_name_type, col_name_type = self.get_type(data, row_name_type, col_name_type)
+            self.__row_name_type:Type[ROWKEYT] = row_name_type
+            self.__col_name_type:Type[COLKETT] = col_name_type
+            self.update(data)
+        else:
+            self.__row_name_type:Type[ROWKEYT] = row_name_type
+            self.__col_name_type:Type[COLKETT] = col_name_type
 
-        for row_name in row_names or []:
-            self.add_row(row_name)
-        for col_name in col_names or []:
-            self.add_column(col_name)
+            for row_name in row_names or []:
+                self.add_row(row_name)
+            for col_name in col_names or []:
+                self.add_column(col_name)
 
     @staticmethod
     def __type_process(self, value:Union[str, type], orig_list:list, orig_flag):
@@ -480,7 +498,6 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
             return self.__default_value_type()
         return None
 
-
     def _row_name_filter(self, row_name:ROWKEYT) -> ROWKEYT:
         return self.__name_filter(row_name, self.__row_name_type, self.__row_names)
     
@@ -536,6 +553,18 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
             self.__data[row_name] = new_row
         self.__col_names = new_col_names
 
+    def move_row(self, row_name:Union[int,str], new_name:Union[int,str]):
+        row = self.get_row(row_name)
+        self.remove_row(row_name)
+        self.add_row(new_name)
+        self.set_row(new_name, row)
+
+    def move_column(self, col_name:Union[int,str], new_name:Union[int,str]):
+        col = self.get_column(col_name)
+        self.remove_column(col_name)
+        self.add_column(new_name)
+        self.set_column(new_name, col)
+
     def get_row(self, row_name:Union[int,str]):
         row_name = self._row_name_filter(row_name)
         if self.__key_assert(row_name, self.__row_names, True):
@@ -545,6 +574,18 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         col_name = self._col_name_filter(col_name)
         if self.__key_assert(col_name, self.__col_names, True):
             return {row_name: self.__data[row_name][col_name] for row_name in self.__row_names}
+
+    def set_row(self, row_name:Union[int,str], row:dict[COLKETT, ITEM]):
+        row_name = self._row_name_filter(row_name)
+        if self.__key_assert(row_name, self.__row_names, True):
+            for col_name, value in row.items():
+                self.__data[row_name][col_name] = value
+
+    def set_column(self, col_name:Union[int,str], col:dict[ROWKEYT, ITEM]):
+        col_name = self._col_name_filter(col_name)
+        if self.__key_assert(col_name, self.__col_names, True):
+            for row_name, value in col.items():
+                self.__data[row_name][col_name] = value
 
     def tranverse(self, with_key=False):
         for row_name in self.__row_names:
@@ -560,14 +601,24 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
             for col_name, value in row.items():
                 self.add_column(col_name, exist_ok=True)
                 self.__data[row_name][col_name] = value
+    
+    def clear(self):
+        self.__data.clear()
+        self.__row_names.clear()
 
-    def merge(self, other:dict[str, dict[str, ITEM]], merge_func:Callable):
+    def sort(self, key:Callable = None, reverse:bool = False):
+        self.__row_names.sort(key=key, reverse=reverse)
+        self.__data = {row_name: self.__data[row_name] for row_name in self.__row_names}
+
+    def merge(self, other:dict[str, dict[str, ITEM]], merge_func:Callable = None):
+        merge_func = lambda x, y: True
         assert callable(merge_func)
         for row_name, row in other.items():
             self.add_row(row_name, exist_ok=True)
             for col_name, value in row.items():
                 self.add_column(col_name, exist_ok=True)
-                self.__data[row_name][col_name] = merge_func(self.__data[row_name][col_name], value)
+                if merge_func(self.__data[row_name][col_name], value):
+                    self.__data[row_name][col_name] = value
 
     def clean_invalid(self, judge_invalid_func:Callable):
         assert callable(judge_invalid_func)
@@ -583,9 +634,12 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         elif isinstance(keys, tuple):
             assert len(keys) == 2, "Keys must be a tuple of length 2"
             row_name, col_name = keys
-            col_name:COLKETT = self._col_name_filter(col_name)
-            row = self.get_row(row_name)
-            return row[col_name]
+            if isinstance(row_name, (int, str)) and isinstance(col_name, (int, str)):
+                col_name:COLKETT = self._col_name_filter(col_name)
+                row = self.get_row(row_name)
+                return row[col_name]
+            else:
+                raise NotImplementedError
         else:
             raise ValueError
         
@@ -637,20 +691,71 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
 
         return table_str
 
+    def keys(self):
+        return self.__data.keys()
+    
+    def values(self):
+        return self.__data.values()
+    
+    def items(self):
+        return self.__data.items()
+
+    def __len__(self):
+        return len(self.__data)
+    
+    def __iter__(self):
+        return self.__data.__iter__()
+    
+    def __contains__(self, item):
+        return self.__data.__contains__(item)
+
     @staticmethod
-    def from_json(path):
+    def get_type(table_dict, default_row_type = str, default_col_type = str):
+        try:
+            row_type = table_dict.keys().__iter__().__next__().__class__
+        except StopIteration:
+            row_type = default_row_type
+        try:
+            col_type = table_dict.values().__iter__().__next__().keys().__iter__().__next__().__class__
+        except StopIteration:
+            col_type = default_col_type
+        return row_type, col_type
+
+    @classmethod
+    def from_json(cls, path):
         table_dict:dict[ROWKEYT, dict[COLKETT, ITEM]] = JsonIO.load_json(path)
-        row_type = table_dict.keys().__iter__().__next__().__class__
-        col_type = table_dict.values().__iter__().__next__().keys().__iter__().__next__().__class__
-        table = Table(row_name_type=row_type, col_name_type=col_type)
-        table.update(table_dict)
+        # row_type, col_type = Table.get_type(table_dict)
+        # table = Table(row_name_type=row_type, col_name_type=col_type)
+        # table.update(table_dict)
+        table = cls.from_dict(table_dict)
         return table
     
-    @staticmethod
-    def to_json(path, table:"Table"):
-        table_dict = table.data
+    @classmethod
+    def to_json(cls, path, table:"Table"):
+        table_dict = table.to_dict()
         JsonIO.dump_json(path, table_dict)
 
+    def to_dict(self):
+        dict_ = {}
+        dict_[self.KW_EMPTY]                = self.empty
+        dict_[self.KW_row_names]            = self.row_names
+        dict_[self.KW_col_names]            = self.col_names
+        dict_[self.KW_default_value_type]   = self.default_value_type.__name__
+        dict_[self.KW_row_name_type]        = self.row_name_type.__name__
+        dict_[self.KW_col_name_type]        = self.col_name_type.__name__
+        dict_[self.KW_data] = dict(self.data)
+        return dict_
+
+    @classmethod
+    def from_dict(cls:type["Table"], dict_:dict):
+        table = cls(row_names=dict_[cls.KW_row_names], 
+                    col_names=dict_[cls.KW_col_names], 
+                    default_value_type  = eval(dict_[cls.KW_default_value_type]),
+                    row_name_type       = eval(dict_[cls.KW_row_name_type]), 
+                    col_name_type       = eval(dict_[cls.KW_col_name_type]),
+                    data=dict_[cls.KW_data])
+        return table
+
     def save(self, path):
-        JsonIO.dump_json(path, self.__data)
+        JsonIO.dump_json(path, self.to_dict())
 
