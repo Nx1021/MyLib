@@ -45,6 +45,7 @@ from numpy import ndarray
 _KT = TypeVar('_KT')
 _VT = TypeVar('_VT')
 
+# region Errors and Warnings ###
 class AmbiguousError(ValueError):
     pass
 
@@ -74,8 +75,9 @@ class ClusterIONotExecutedWarning(ClusterWarning):
 
 class ClusterNotRecommendWarning(ClusterWarning):
     pass
+# endregion Errors and Warnings ###
 
-
+# region functions ###
 def method_exit_hook_decorator(cls, func:Callable, exit_hook_func, enter_condition_func = None):
     enter_condition_func = (lambda : True) if enter_condition_func is None else enter_condition_func
     def wrapper(self, *args, **kw):
@@ -89,6 +91,22 @@ def method_exit_hook_decorator(cls, func:Callable, exit_hook_func, enter_conditi
             if DEBUG:
                 print(f"{self} skips {func.__name__}")
     return wrapper
+
+def parse_kw(**kwargs) -> list[dict[str, Any]]:
+    if len(kwargs) == 0:
+        return []
+    assert all([isinstance(v, list) for v in kwargs.values()])
+    length = len(list(kwargs.values())[0])
+    assert all([len(v) == length for v in kwargs.values()])
+    kw_keys = list(kwargs.keys())
+    kw_values = list(kwargs.values())
+    
+    kws = []
+    for data_i in range(length):
+        kws.append({k:v[data_i] for k, v in zip(kw_keys, kw_values)})
+
+    return kws
+# endregion functions ###
 
 class IOStatusManager():
     WRITING_MARK = '.writing'
@@ -111,10 +129,7 @@ class IOStatusManager():
 
         self.__writer = self._Writer(self)
 
-        self.__decorate_callable = False
-        self.__decorate_next_callable = False
-        self.__next_called_overwrite_allowed = False
-
+    # region context and writer ###
     class _IOContext():
         DEFAULT_INPUT_OPEN                  = False
         DEFAULT_INPUT_WRITABLE              = False
@@ -200,34 +215,19 @@ class IOStatusManager():
         def __exit__(self, exc_type, exc_value, traceback):
             if exc_type is not None:
                 raise exc_type(exc_value).with_traceback(traceback)
-
-    def call_with_writer(self, valid, overwrite_allowed = False, only_next = True):
+     
+    def get_writer(self, valid = True):
+        ok = False
         if valid:
-            self.__set_decorate_callable(not only_next, True, overwrite_allowed)
-        return self
-    
-    def stop_call_with_writer(self):
-        self.__reset_decorate_callable_paras()
+            ok = not self.is_writing
+        
+        if ok:
+            return self.__writer
+        else:
+            return self._Empty_Writer(self) ###继续实现，修改之前的代码
+    # endregion context and writer ###
 
-    def __reset_decorate_callable_paras(self):
-        self.__decorate_callable = False
-        self.__decorate_next_callable = False
-        self.__next_called_overwrite_allowed = False
-
-    def __set_decorate_callable(self, decorate_callable, decorate_next_callable, next_called_overwrite_allowed):
-        self.__decorate_callable = decorate_callable
-        self.__decorate_next_callable = decorate_next_callable
-        self.__next_called_overwrite_allowed = next_called_overwrite_allowed
-
-    # def __getattribute__(self, name):
-    #     rlt = super().__getattribute__(name)
-    #     if self.__decorate_next_callable:
-    #         if callable(rlt):
-    #             rlt = self._write_decorator(rlt, force = self.__next_called_overwrite_allowed)
-    #         if not self.__decorate_callable:
-    #             self.__reset_decorate_callable_paras()
-    #     return rlt
-
+    # region mark file ###
     @abstractmethod
     def get_writing_mark_file(self) -> str:
         pass
@@ -277,17 +277,9 @@ class IOStatusManager():
         with open(file_path, 'a') as file:
             line = f"{log_type}, {src}, {dst}, {type(value)}\n"
             file.write(line)
+    # endregion mark file ###
 
-    def get_writer(self, valid = True):
-        ok = False
-        if valid:
-            ok = not self.is_writing
-        
-        if ok:
-            return self.__writer
-        else:
-            return self._Empty_Writer(self) ###继续实现，修改之前的代码
-
+    # region IOStatus ###
     @property
     def closed(self):
         return self.__closed
@@ -417,19 +409,13 @@ class IOStatusManager():
 
     def set_overwrite_forbidden_hook(self):
         pass
-    
-    @staticmethod
-    def _write_decorator(func):
-        def wrapper(self:IOStatusManager, *args, overwrite_allowed = False, **kwargs):
-            with self.get_writer().allow_overwriting(overwrite_allowed):
-                rlt = func(self, *args, **kwargs)
-            return rlt
-        return wrapper
+    # endregion IOStatus ###
 
 class _RegisterInstance(ABC, Generic[RGSITEM]):
     _registry:dict[str, RGSITEM] = {}
     INDENTITY_PARA_NAMES = []
 
+    # region _RegisterInstance ###
     def __new__(cls, *args, **kwargs):
         obj = super().__new__(cls)
         obj.init_identity(*args, **kwargs)  # initialize identity_paras
@@ -468,7 +454,9 @@ class _RegisterInstance(ABC, Generic[RGSITEM]):
 
     def _lock_identity_paras(self, lock = True):
         self._identity_paras_locked = lock  
+    # endregion _RegisterInstance ###
 
+    # region __getattr__ __setattr__###
     def __getattr__(self, name):
         if name == "_identity_paras_locked":
             return False
@@ -478,6 +466,7 @@ class _RegisterInstance(ABC, Generic[RGSITEM]):
         if self._identity_paras_locked and name in self.INDENTITY_PARA_NAMES:
             raise AttributeError(f"cannot set {name}")
         super().__setattr__(name, value)
+    # endregion  __getattr__ __setattr__###
 
 class _Prefix(dict[str, str]):
     KW_PREFIX = "prefix"
@@ -670,6 +659,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     '''
     immutable object, once created, it can't be changed.
     '''
+    # region class variables ###
     KW_data_path         = "data_path"
     KW_sub_dir           = "sub_dir"
     KW_corename          = "corename"
@@ -713,8 +703,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     KW_FUNC_MODULE = "func_module"
     KW_FUNC_BIND_ARGS = "func_bind_args"
     KW_FUNC_BIND_KWARGS = "func_bind_kwargs"
+    # endregion class variables ###
 
-    ###
+    # region override _RegisterInstance###
     INDENTITY_PARA_NAMES = ["sub_dir", "corename", "suffix", "prefix", "appendnames", 
                             "prefix_joiner", "appendnames_joiner", "data_path"]
     @classmethod
@@ -772,8 +763,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
         self._prefix_obj         = _Prefix(prefix, prefix_joiner)
         self._appendnames_obj    = _AppendNames(appendnames, appendnames_joiner)
-    ###
-                                            
+    # endregion override _RegisterInstance###
+
+    # region hook
     def __init_subclass__(cls, **kwargs):
         ### __init__ ###
         cls.__init__ = method_exit_hook_decorator(cls, cls.__init__, cls.set_inited, cls.has_not_inited)
@@ -789,7 +781,11 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             return True
         else:
             return False
+    # endregion hook               
 
+    # region init and create instance
+
+    # region - init
     def __init__(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
                  prefix:str = "", appendnames:list[str] = None,  # type: ignore
                  prefix_joiner:str = '', appendnames_joiner:str = '',
@@ -829,37 +825,6 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
         self.init_additional_hook()
 
-    @classmethod
-    def create_temp(cls):
-        cls.RETURN_INITED = False
-        return cls
-
-    def __hash__(self):
-        return hash(self.get_path()) # + id(self)
-    
-    def __eq__(self, o: object) -> bool:
-        if isinstance(o, FilesHandle):
-            return hash(self) == hash(o)
-        else:
-            return False
-
-    def immutable_attr_same_as(self, o: "FilesHandle") -> bool:
-        rlt = self.data_path == o.data_path and \
-                self.sub_dir == o.sub_dir and \
-                self.corename == o.corename and \
-                self.suffix == o.suffix and \
-                self.prefix == o.prefix and \
-                self.appendnames == o.appendnames and \
-                self.read_func == o.read_func and \
-                self.write_func == o.write_func and \
-                self.value_type == o.value_type
-        return rlt
-
-    def __setattr__(self, name, value):
-        if hasattr(self, "_inited"):
-            raise AttributeError(f"FilesHandle is immutable, you can't change its attribute")
-        return super().__setattr__(name, value)
-
     def init_input_hook(self, *, sub_dir, corename, suffix, 
                              prefix, appendnames, prefix_joiner, appendnames_joiner, 
                              data_path, 
@@ -873,180 +838,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     def init_additional_hook(self):
         pass
+    # endregion - init
 
-    ##IO##        
-    @property
-    def is_closed(self):
-        return self.cluster.closed
-
-    @property
-    def is_readonly(self):
-        return self.cluster.readonly
-
-    @property
-    def overwrite_forbidden(self):
-        return self.cluster.overwrite_forbidden
-    ######
-
-    @property
-    def multi_files(self):
-        return self.cluster.MULTI_FILES
-
-    @property
-    def prefix(self) -> str:
-        return self._prefix_obj.prefix
-
-    @property
-    def prefix_with_joiner(self) -> str:
-        return self._prefix_obj.get_with_joiner()
-
-    @property
-    def appendnames(self) -> Union[list[str], str]:
-        appendnames = self._appendnames_obj.appendnames
-        return _AppendNames.conditional_return(self.multi_files, appendnames)
-
-    @property
-    def appendnames_with_joiner(self) -> Union[list[str], str]:
-        apwj = self._appendnames_obj.get_with_joiner()
-        return _AppendNames.conditional_return(self.multi_files, apwj)
-
-    @property
-    def synced(self):
-        return self.cache_proxy.synced
-    
-    @property
-    def value_type(self) -> type[VDMT]:
-        return self.cache_proxy.value_type
-
-    @property
-    def full_directory(self):
-        return os.path.join(self.data_path, self.sub_dir)
-
-    @property
-    def all_file_exist(self):
-        paths = self.get_path(get_list = True)
-        if len(paths) == 0:
-            return False
-        return all([os.path.exists(x) for x in paths])
-    
-    @property
-    def all_file_not_exist(self):
-        paths = self.get_path(get_list = True)
-        if len(paths) == 0:
-            return True
-        return all([not os.path.exists(x) for x in paths])
-    
-    @property
-    def any_file_exist(self):
-        paths = self.get_path(get_list = True)
-        if len(paths) == 0:
-            return False
-        return any([os.path.exists(x) for x in paths])
-    
-    @property
-    def any_file_not_exist(self):
-        paths = self.get_path(get_list = True)
-        if len(paths) == 0:
-            return True
-        return any([not os.path.exists(x) for x in paths])
-    
-    @property
-    def has_cache(self):
-        return (self.cache is not None)
-
-    @property
-    def empty(self):
-        return not (self.any_file_exist or self.has_cache)
-
-    @property
-    def file_exist_status(self) -> list[bool]:
-        paths = self.get_path(get_list=True)
-        return [os.path.exists(x) for x in paths]
-
-    @property
-    def valid(self):
-        return self.cluster is not None
-
-    def get_name(self, get_list = False) -> Union[list[str], str]:
-        if self.multi_files or get_list:
-            awu_list:list[str] = self._appendnames_obj.get_with_joiner() 
-            return [self.prefix_with_joiner + self.corename + x + self.suffix for x in awu_list]
-        else:
-            awu:str = self.appendnames_with_joiner # type: ignore
-            return self.prefix_with_joiner + self.corename + awu + self.suffix 
-
-    def get_dir(self):
-        return os.path.join(self.data_path, self.sub_dir)
-
-    def get_path(self, get_list = False) -> Union[list[str], str]:
-        name = self.get_name(get_list = get_list)
-        dir_ = self.get_dir()
-        if isinstance(name, str):
-            return os.path.join(dir_, name)
-        else:
-            return [os.path.join(dir_, x) for x in name]
-
-    @property
-    def cache(self) -> VDMT:
-        # if not self.is_closed:
-        #     if not self.is_readonly:
-        #         return self.cache_proxy.cache
-        #     else:
-        #         return copy.copy(self.cache_proxy.cache)
-        # else:
-        #     return None
-        if not self.is_readonly:
-            return self.cache_proxy.cache
-        else:
-            return copy.copy(self.cache_proxy.cache)
-
-    def set_cache(self, cache):
-        if not self.is_closed and not self.is_readonly:
-            if cache is None:
-                self.erase_cache()
-            else:
-                self.cache_proxy.cache = cache
-
-    def erase_cache(self):
-        if not self.is_closed and not self.is_readonly:
-            self.cache_proxy.cache = None    
-
-    def _unsafe_get_cache(self) -> VDMT:
-        '''
-        not recommended, use with caution
-        '''
-        return self.cache_proxy.cache
-
-    def read(self) -> Union[VDMT, list[VDMT]]:
-        if self.read_func is not None:
-            path = self.get_path()
-            if isinstance(path, str):
-                if os.path.exists(path):
-                    return self.read_func(path)
-            else:
-                rlts = []
-                for p in path:
-                    if os.path.exists(p):
-                        rlts.append(self.read_func(p))
-                    else:
-                        rlts.append(None)
-
-    def set_synced(self, synced:bool = True):
-        if self.has_cache and self.all_file_exist:
-            pass
-        elif not self.has_cache and self.all_file_not_exist:
-            synced = True
-        else:
-            synced = False
-        self.cache_proxy.synced = synced
-
-    @staticmethod
-    def _parse_partial(partial_obj:partial):
-        func = partial_obj.func
-        args = partial_obj.args
-        kwargs = partial_obj.keywords
-        return func, args, kwargs
-
+    # region - export and import func
     @classmethod
     def export_func(cls, func:Callable):
         if func in cls._unpickleable_func:
@@ -1075,7 +869,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             return func_info
         else:
             return func
-        
+
     @classmethod
     def import_func(cls, import_obj):
         if isinstance(import_obj, dict):
@@ -1091,7 +885,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             raise ValueError(f"unknown function, try to install module:{import_obj[cls.KW_FUNC_MODULE]}")
 
         return func
+    # endregion - export and import func
 
+    # region - export and import dict
     def as_dict(self):
         dict_ = {}
         dict_[self.KW_data_path]     = self.data_path
@@ -1104,6 +900,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         dict_[self.KW_write_func]    = self.export_func(self.write_func)
         dict_[self.KW_cache]         = self.cache_proxy.as_dict()
         return dict_
+
 
     @classmethod
     def from_dict(cls, cluster, dict_:dict):
@@ -1129,7 +926,41 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             read_func = read_func, write_func = write_func,
             cache = cache, value_type = value_type)
         return obj
-    
+    # endregion - export and import dict
+
+    # region - create instance
+    @classmethod
+    def try_get_default(cls, file:str,
+                            read_func:Callable = None, 
+                            write_func:Callable = None, 
+                            value_type:Callable = None):
+        def get_with_priority(parameter, cls_default, public_default):
+            if parameter is not None:
+                return parameter
+            elif cls_default is not None:
+                return cls_default
+            else:
+                return public_default
+        
+        if file.startswith('.'):
+            suffix = file
+        else:
+            suffix = os.path.splitext(file)[1]
+        if suffix in cls.DEFAULT_FILE_TYPE:
+            _read_func, _write_func, _value_type = cls.DEFAULT_FILE_TYPE[suffix]
+            read_func = get_with_priority(read_func, cls.DEFAULT_READ_FUNC, _read_func)
+            write_func = get_with_priority(write_func, cls.DEFAULT_WRITE_FUNC, _write_func)
+            value_type = get_with_priority(value_type, cls.DEFAULT_VALUE_TYPE, _value_type)
+        # else:
+        #     warnings.warn(f"can't find default file type for {suffix}", ClusterNotRecommendWarning)
+
+        return read_func, write_func, value_type
+
+    @classmethod
+    def create_temp(cls):
+        cls.RETURN_INITED = False
+        return cls
+
     @classmethod
     def from_path(cls, cluster:FCT, path:Union[str, list[str]], *,
                   prefix_joiner:str = '', appendnames_joiner:str = '', 
@@ -1241,43 +1072,219 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     @classmethod
     def create_not_exist_fileshandle(cls, cluster:FCT):
         return cls(cluster, "", "notexist", ".fhnotexist")
-                                     
+    # endregion - create instance
+
+    # endregion init and create instance   
+
+    # region make immutable
+    def __hash__(self):
+        return hash(self.get_path()) # + id(self)
+    
+    def __eq__(self, o: object) -> bool:
+        if isinstance(o, FilesHandle):
+            return hash(self) == hash(o)
+        else:
+            return False
+
+    def immutable_attr_same_as(self, o: "FilesHandle") -> bool:
+        rlt = self.data_path == o.data_path and \
+                self.sub_dir == o.sub_dir and \
+                self.corename == o.corename and \
+                self.suffix == o.suffix and \
+                self.prefix == o.prefix and \
+                self.appendnames == o.appendnames and \
+                self.read_func == o.read_func and \
+                self.write_func == o.write_func and \
+                self.value_type == o.value_type
+        return rlt
+
+    def __setattr__(self, name, value):
+        if hasattr(self, "_inited"):
+            raise AttributeError(f"FilesHandle is immutable, you can't change its attribute")
+        return super().__setattr__(name, value)
+    # endregion make immutable
+
+    # region IO status    
+    @property
+    def is_closed(self):
+        return self.cluster.closed
+
+    @property
+    def is_readonly(self):
+        return self.cluster.readonly
+
+    @property
+    def overwrite_forbidden(self):
+        return self.cluster.overwrite_forbidden
+    # endregion IO status    
+
+    # region get immutable
+    @property
+    def multi_files(self):
+        return self.cluster.MULTI_FILES
+
+    @property
+    def prefix(self) -> str:
+        return self._prefix_obj.prefix
+
+    @property
+    def prefix_with_joiner(self) -> str:
+        return self._prefix_obj.get_with_joiner()
+
+    @property
+    def appendnames(self) -> Union[list[str], str]:
+        appendnames = self._appendnames_obj.appendnames
+        return _AppendNames.conditional_return(self.multi_files, appendnames)
+
+    @property
+    def appendnames_with_joiner(self) -> Union[list[str], str]:
+        apwj = self._appendnames_obj.get_with_joiner()
+        return _AppendNames.conditional_return(self.multi_files, apwj)
+
+    @property
+    def synced(self):
+        return self.cache_proxy.synced
+    
+    @property
+    def value_type(self) -> type[VDMT]:
+        return self.cache_proxy.value_type
+
+    @property
+    def full_directory(self):
+        return os.path.join(self.data_path, self.sub_dir)
+
+    @property
+    def all_file_exist(self):
+        paths = self.get_path(get_list = True)
+        if len(paths) == 0:
+            return False
+        return all([os.path.exists(x) for x in paths])
+    
+    @property
+    def all_file_not_exist(self):
+        paths = self.get_path(get_list = True)
+        if len(paths) == 0:
+            return True
+        return all([not os.path.exists(x) for x in paths])
+    
+    @property
+    def any_file_exist(self):
+        paths = self.get_path(get_list = True)
+        if len(paths) == 0:
+            return False
+        return any([os.path.exists(x) for x in paths])
+    
+    @property
+    def any_file_not_exist(self):
+        paths = self.get_path(get_list = True)
+        if len(paths) == 0:
+            return True
+        return any([not os.path.exists(x) for x in paths])
+    
+    @property
+    def has_cache(self):
+        return (self.cache is not None)
+
+    @property
+    def empty(self):
+        return not (self.any_file_exist or self.has_cache)
+
+    @property
+    def file_exist_status(self) -> list[bool]:
+        paths = self.get_path(get_list=True)
+        return [os.path.exists(x) for x in paths]
+
+    @property
+    def valid(self):
+        return self.cluster is not None
+
+    def get_name(self, get_list = False) -> Union[list[str], str]:
+        if self.multi_files or get_list:
+            awu_list:list[str] = self._appendnames_obj.get_with_joiner() 
+            return [self.prefix_with_joiner + self.corename + x + self.suffix for x in awu_list]
+        else:
+            awu:str = self.appendnames_with_joiner # type: ignore
+            return self.prefix_with_joiner + self.corename + awu + self.suffix 
+
+    def get_dir(self):
+        return os.path.join(self.data_path, self.sub_dir)
+
+    def get_path(self, get_list = False) -> Union[list[str], str]:
+        name = self.get_name(get_list = get_list)
+        dir_ = self.get_dir()
+        if isinstance(name, str):
+            return os.path.join(dir_, name)
+        else:
+            return [os.path.join(dir_, x) for x in name]
+            
+    def get_key(self):
+        return self.cluster.MemoryData._reverse_dict[self] # type: ignore
+
+    # endregion path, dir, name
+
+    # region cache
+    @property
+    def cache(self) -> VDMT:
+        # if not self.is_closed:
+        #     if not self.is_readonly:
+        #         return self.cache_proxy.cache
+        #     else:
+        #         return copy.copy(self.cache_proxy.cache)
+        # else:
+        #     return None
+        if not self.is_readonly:
+            return self.cache_proxy.cache
+        else:
+            return copy.copy(self.cache_proxy.cache)
+
+    def set_cache(self, cache):
+        if not self.is_closed and not self.is_readonly:
+            if cache is None:
+                self.erase_cache()
+            else:
+                self.cache_proxy.cache = cache
+
+    def erase_cache(self):
+        if not self.is_closed and not self.is_readonly:
+            self.cache_proxy.cache = None    
+
+    def _unsafe_get_cache(self) -> VDMT:
+        '''
+        not recommended, use with caution
+        '''
+        return self.cache_proxy.cache
+
+    def read(self) -> Union[VDMT, list[VDMT]]:
+        if self.read_func is not None:
+            path = self.get_path()
+            if isinstance(path, str):
+                if os.path.exists(path):
+                    return self.read_func(path)
+            else:
+                rlts = []
+                for p in path:
+                    if os.path.exists(p):
+                        rlts.append(self.read_func(p))
+                    else:
+                        rlts.append(None)
+
+    def set_synced(self, synced:bool = True):
+        if self.has_cache and self.all_file_exist:
+            pass
+        elif not self.has_cache and self.all_file_not_exist:
+            synced = True
+        else:
+            synced = False
+        self.cache_proxy.synced = synced
+    # endregion cache
+
+    # region other
     def clear_notfound(self):
         new_appendnames = []
         for i, e in enumerate(self.file_exist_status):
             if e:
                 new_appendnames.append(self._appendnames_obj.appendnames[i])
         return self.from_fileshandle(self.cluster, self, appendnames = new_appendnames)
-
-    @classmethod
-    def try_get_default(cls, file:str,
-                            read_func:Callable = None, 
-                            write_func:Callable = None, 
-                            value_type:Callable = None):
-        def get_with_priority(parameter, cls_default, public_default):
-            if parameter is not None:
-                return parameter
-            elif cls_default is not None:
-                return cls_default
-            else:
-                return public_default
-        
-        if file.startswith('.'):
-            suffix = file
-        else:
-            suffix = os.path.splitext(file)[1]
-        if suffix in cls.DEFAULT_FILE_TYPE:
-            _read_func, _write_func, _value_type = cls.DEFAULT_FILE_TYPE[suffix]
-            read_func = get_with_priority(read_func, cls.DEFAULT_READ_FUNC, _read_func)
-            write_func = get_with_priority(write_func, cls.DEFAULT_WRITE_FUNC, _write_func)
-            value_type = get_with_priority(value_type, cls.DEFAULT_VALUE_TYPE, _value_type)
-        # else:
-        #     warnings.warn(f"can't find default file type for {suffix}", ClusterNotRecommendWarning)
-
-        return read_func, write_func, value_type
-
-    def get_key(self):
-        return self.cluster.MemoryData._reverse_dict[self] # type: ignore
 
     def __repr__(self) -> str:
         if len(self._appendnames_obj.appendnames) == 1:
@@ -1287,6 +1294,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             string = f"FilesHandle({paths[0]}) + {len(paths) - 1} files"
         string += f" file exist: {self.file_exist_status}, has cache: {self.has_cache}, synced: {self.synced}"
         return string
+    # endregion other
 
 class BinDict(dict[_KT, _VT], Generic[_KT, _VT]):
     def __init__(self, *args, **kwargs):
@@ -1355,7 +1363,6 @@ class BinDict(dict[_KT, _VT], Generic[_KT, _VT]):
     def __repr__(self):
         return f"{self.__class__.__name__}({super().__repr__()})"
 
-
 class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generic[_VT, DMT, VDMT]):
     _DMT = TypeVar('_DMT', bound="DataMapping")
     _VDMT = TypeVar('_VDMT')
@@ -1370,7 +1377,7 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     load_memory_func:Callable[[str], dict]         = deserialize_object
     save_memory_func:Callable[[str, dict], None]   = serialize_object
 
-    #############
+    # region DataMapping override for _RegisterInstance ##
     INDENTITY_PARA_NAMES = ["_top_directory", "mapping_name", "flag_name"]
     @classmethod
     def register(cls, identity_string, obj:"DataMapping"):
@@ -1401,9 +1408,13 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         self._top_directory = top_directory
         self.mapping_name = name  
         self.flag_name = flag_name         
-    #############
+    # endregion DataMapping override ##
 
+    # region DataMapping ####
     def __init_subclass__(cls, **kwargs):
+        '''
+        add hook to some methods
+        '''
         ### __init__ ###
         cls.__init__ = method_exit_hook_decorator(cls, cls.__init__, cls.try_open, cls.has_not_inited)
         ### clear ###
@@ -1466,7 +1477,9 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
                     pass
             else:
                 os.makedirs(self.data_path)
+    # endregion DataMapping new methods ####
 
+    # region DataMapping override for IOStatusManager####
     def open_hook(self):
         self.make_path()
         self.load()
@@ -1480,7 +1493,9 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
 
     def get_writing_mark_file(self):
         return os.path.join(self.top_directory, self.mapping_name, self.WRITING_MARK)
+    # endregion DataMapping override for IOStatusManager####
     
+    # region Memorydata operation ####
     def _set_MemoryData_modified(self):
         self._MemoryData_modified = True
         if self.parent_data_mapping is not None:
@@ -1515,6 +1530,10 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         if os.path.exists(self.MemoryData_path):
             os.remove(self.MemoryData_path)
 
+    @abstractmethod
+    def rebuild(self):
+        pass
+
     def save(self, force = False):
         if self.MemoryData_modified or force:
             self.__class__.save_memory_func(self.MemoryData_path, self.save_preprecess())
@@ -1543,7 +1562,9 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         new_dict = dict(sorted(self.MemoryData.items(), key=lambda x:x[0])) # type: ignore
         self.MemoryData.clear()
         self.MemoryData.update(new_dict)    
+    # endregion Memorydata operation ####
 
+    # region io #####
     @property
     def num(self):
         return len(self.keys())
@@ -1556,11 +1577,7 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     def continuous(self):
         return self.num == self.i_upper
 
-    @abstractmethod
-    def rebuild(self):
-        pass
-
-    ####################
+    # region - io metas #
     @abstractmethod
     def read(self, src:int) -> VDMT:
         pass
@@ -1584,10 +1601,9 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     @abstractmethod
     def copy_from(self, src:DMT, *, cover = False, force = False) -> None:
         pass
-    ####################
+    # endregion io metas #####
 
-    #######################
-
+    # region - general #    
     def keys(self):
         return self.MemoryData.keys()
 
@@ -1631,9 +1647,9 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     
     def __len__(self):
         return len(self.MemoryData)
-    ####################
+    # endregion - general ###
 
-    ### complex io ####
+    # region - complex io ####
     def append(self, value:VDMT, *, force = False, **other_paras):
         assert self.KEY_TYPE == int, f"the key_type of {self.__class__.__name__} is not int"
         dst = self.i_upper
@@ -1652,8 +1668,11 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         with self.get_writer(force).allow_overwriting():
             for i, key in tqdm(enumerate(list(self.keys()))):
                 self.modify_key(key, i)
+    # endregion - complex io ####
 
-    ##########
+    # endregion####
+
+    # region TODO ####
     # def choose_unfinished_operation(obj):
     #     '''
     #         0. skip
@@ -1706,54 +1725,11 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     #     if self._unfinished_operation == 3:
     #         # reinit
     #         self.rebuild()
-    ##########
+    # endregion TODO ####
 
     def __repr__(self):
         return self.identity_string()
     
-    @classmethod
-    def _test_io(cls, d0:DMT, d1:DMT):
-        pass
-
-    @classmethod
-    def _test(cls):
-        clsname = f"{cls.__name__}"
-
-        top_dir = os.path.join(os.getcwd(), f"{clsname}Test")
-
-        d0 = cls(top_dir, f"{clsname}0")
-        d1 = cls(top_dir, f"{clsname}1")
-
-        d0.clear(force=True)
-        d1.clear(force=True)
-
-        cls._test_io(d0, d1)
-
-        d0.rebuild()
-
-        start = time.time()
-        with d1.get_writer():
-            for array in d0: # type: ignore
-                d1.append(array)
-        print("append passed", time.time() - start)
-
-        start = time.time()
-        d1.clear(force=True)
-        print("clear passed", time.time() - start)
-
-        start = time.time()
-        with d1.get_writer():
-            d1.copy_from(d0, cover=True) # type: ignore
-        print("copy_from passed", time.time() - start)
-
-        with d1.get_writer():
-            d1.remove(0)
-        start = time.time()
-        d1.make_continuous(force=True)
-        print("make_continuous passed", time.time() - start)
-
-        return d0, d1
-
 class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
     '''
         src_handle, dst_handle = self.get_FilesHandle(src = src, dst = dst, **other_paras)
@@ -1788,6 +1764,7 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
 
         self.save_memory_after_writing = False
 
+    # region ctrl flags
     def _set_ctrl_flag(self, cache_priority=True, strict_priority_mode=False, write_synchronous=False, io_raw = False):
         self.__cache_priority = cache_priority
         self.__strict_priority_mode = strict_priority_mode
@@ -1816,7 +1793,9 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
             src_handle.set_synced(synced)
         if dst_handle is not None:
             dst_handle.set_synced(synced)
+    # endregion ctrl flags
 
+    # region properties
     @property
     def key_type(self):
         return self.files_cluster.KEY_TYPE
@@ -1856,7 +1835,9 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
     @property
     def _FCMemoryData(self)  -> BinDict[int, FHT]:
         return self.files_cluster.MemoryData # type: ignore
+    # endregion properties
 
+    # region hook funcs
     @abstractmethod
     def get_FilesHandle(self, src, dst, value, **other_paras) -> tuple[FHT, FHT]:
         pass
@@ -1897,6 +1878,17 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
     def core_func_hook(self, *core_args):
         pass
 
+    def operate_elem(self, src, dst, value, **other_paras):
+        raise NotImplementedError
+
+    def gather_mutil_results(self, results:list):
+        raise NotImplementedError
+
+    def split_value_as_mutil(self, *core_values):
+        raise NotImplementedError
+    # endregion hook funcs
+
+    # region io pipeline
     def io_file(self, src_file_handle, dst_file_handle, value = None) -> Any:
         value = self.format_value(value)
         path, *core_values = self.cvt_to_core_paras(src_file_handle = src_file_handle, 
@@ -1916,6 +1908,19 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
             raise IOMetaPriorityError("core_func is None")
         rlt = self.inv_format_value(rlt)
         return rlt
+
+    def execute_core_func(self, core_func, *core_args, **other_paras):
+        if self.multi_files:
+            rlts = []
+            for i in range(len(core_args[0])):
+                rlt = core_func(*[x[i] for x in core_args], **self.core_func_binded_paras)
+                self.core_func_hook(*[x[i] for x in core_args], **other_paras)
+                rlts.append(rlt)
+            return rlts
+        else:
+            rlt = core_func(*core_args, **self.core_func_binded_paras)
+            self.core_func_hook(*core_args)
+            return rlt
 
     def io(self, src_handle:FilesHandle, dst_handle:FilesHandle, preprocessed_value):
         priority_ok = False
@@ -1949,9 +1954,6 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
 
         return rlt # type: ignore
 
-    def operate_elem(self, src, dst, value, **other_paras):
-        raise NotImplementedError
-
     def __call__(self, *, src = None, dst = None, value = None, **other_paras) -> Any:
         if not self.__io_raw:
             value = self.preprogress_value(value, **other_paras)
@@ -1966,13 +1968,9 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
         if not self.__io_raw:
             rlt = self.postprogress_value(rlt, **other_paras)
         return rlt
+    # endregion io pipeline
 
-    def gather_mutil_results(self, results:list):
-        raise NotImplementedError
-
-    def split_value_as_mutil(self, *core_values):
-        raise NotImplementedError
-
+    # region conditions func
     def check_src(self, src):
         if not isinstance(src, self.key_type):
             return False
@@ -1990,19 +1988,7 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
 
     def is_overwriting(self, dst:int):
         return not self.files_cluster.idx_unwrited(dst)
-
-    def execute_core_func(self, core_func, *core_args, **other_paras):
-        if self.multi_files:
-            rlts = []
-            for i in range(len(core_args[0])):
-                rlt = core_func(*[x[i] for x in core_args], **self.core_func_binded_paras)
-                self.core_func_hook(*[x[i] for x in core_args], **other_paras)
-                rlts.append(rlt)
-            return rlts
-        else:
-            rlt = core_func(*core_args, **self.core_func_binded_paras)
-            self.core_func_hook(*core_args)
-            return rlt
+    # endregion conditions func
 
 class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
@@ -3146,20 +3132,4 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         self.operate_clusters(FilesCluster.save, force=force)
         self.operate_children_node(DatasetNode.save_all, force=force)
     # endregion Memorydata operation ####
-
-def parse_kw(**kwargs) -> list[dict[str, Any]]:
-    if len(kwargs) == 0:
-        return []
-    assert all([isinstance(v, list) for v in kwargs.values()])
-    length = len(list(kwargs.values())[0])
-    assert all([len(v) == length for v in kwargs.values()])
-    kw_keys = list(kwargs.keys())
-    kw_values = list(kwargs.values())
-    
-    kws = []
-    for data_i in range(length):
-        kws.append({k:v[data_i] for k, v in zip(kw_keys, kw_values)})
-
-    return kws
-
 

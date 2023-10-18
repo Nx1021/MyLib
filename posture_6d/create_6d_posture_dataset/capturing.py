@@ -25,7 +25,7 @@ FIRST_FRAME_ARUCO_NUM = 12
 BASE_FRAME_ARUCO_NUM = 8
 SINGLE_BASE_FRAME_ARUCO_NUM = 3
 
-STOP_COLOR_THRESHOLD = 30
+STOP_COLOR_THRESHOLD = 25
 STOP_BLACK_TIME = 3
 
 TEST = False
@@ -593,8 +593,11 @@ class Capturing():
         obj_exanple_img = np.zeros((camera_field.shape[0], int(camera_field.shape[1]/2), 3))
         if self.data_recorder.AddNum == 0:
             try:
-                obj_exanple_img = self.obj_exanple_img_dict[self.data_recorder.current_category_name]
-                obj_exanple_img = cv2.resize(obj_exanple_img, (int(camera_field.shape[1]/2), camera_field.shape[0]))
+                # TODO:
+                if self.data_recorder.current_category_index > 1 and self.data_recorder.current_category_index < 11:
+                    _name = self.model_manager.std_meshes_names
+                    obj_exanple_img = self.obj_exanple_img_dict[_name[self.data_recorder.current_category_index - 2]]
+                    obj_exanple_img = cv2.resize(obj_exanple_img, (int(camera_field.shape[1]/2), camera_field.shape[0]))
             except KeyError:
                 pass
 
