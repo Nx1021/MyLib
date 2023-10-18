@@ -39,7 +39,7 @@ from .IOAbstract import DataMapping, DatasetNode, IOMeta, BinDict, _KT, _VT, DMT
         IOStatusWarning, ClusterIONotExecutedWarning, ClusterNotRecommendWarning,\
     FilesCluster,\
     parse_kw
-from .datacluster import DisunifiedFilesHandle, DisunifiedFileCluster, DictLikeCluster, DictLikeHandle
+from .dataCluster import DisunifiedFilesHandle, DisunifiedFileCluster, DictLikeCluster, DictLikeHandle
 
 SFH = TypeVar('SFH', bound='SpliterFilesHandle')
 SP = TypeVar('SP', bound='Spliter')
@@ -62,164 +62,6 @@ class SpliterFilesHandle(DisunifiedFilesHandle[SP, Table[int, str, bool]]):
 
     LOAD_CACHE_ON_INIT = True
 
-# class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str, bool]], Generic[SP, SPG]):
-#     SPLIT_FILE = "split.json"
-#     FILESHANDLE_TYPE = SpliterFilesHandle
-
-#     KW_TRAIN = "train"
-#     KW_VAL = "val"
-#     DEFAULT_SUB_SET = [KW_TRAIN, KW_VAL]
-
-#     def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, **kwargs) -> None:
-#         super().__init__(dataset_node, name, *args, **kwargs)
-#         self.split_fileshandle:SpliterFilesHandle = self.FILESHANDLE_TYPE.from_name(self, self.SPLIT_FILE)
-#         self._set_fileshandle(0, self.split_fileshandle)
-
-#         self.__exclusive = False
-
-#         with self.get_writer():
-#             for subset in self.DEFAULT_SUB_SET:
-#                 self.add_subset(subset)
-
-#     @property
-#     def exclusive(self):
-#         return self.__exclusive
-    
-#     @exclusive.setter
-#     def exclusive(self, value):
-#         self.__exclusive = bool(value)
-
-#     @property
-#     def split_table(self):
-#         return self.split_fileshandle.cache
-    
-#     @property
-#     def split_table_data(self):
-#         return self.split_table.data
-    
-#     @property
-#     def subsets(self):
-#         return self.split_table.col_names
-
-#     #### add\remove\set\query of elem/subset ####
-#     def add_elem(self, elem_i:int):
-#         self.split_table.add_row(elem_i, exist_ok=True)
-    
-#     def remove_elem(self, elem_i:int):
-#         self.split_table.remove_row(elem_i, not_exist_ok=True)
-
-#     def add_subset(self, subset:str):
-#         self.split_table.add_column(subset, exist_ok=True)
-
-#     def remove_subset(self, subset:str):
-#         self.split_table.remove_column(subset, not_exist_ok=True)
-
-#     def set_one(self, elem_i:int, subset:str, value:bool):
-#         if elem_i not in self.split_table.row_names:
-#             self.add_elem(elem_i)
-#         if self.exclusive and value:
-#             self.split_table[elem_i, :] = False
-#         self.split_table[elem_i, subset] = value
-    
-#     def set_one_elem(self, elem_i, subsets:dict[str, bool]):
-#         for subset, value in subsets.items():
-#             if subset not in self.split_table.col_names:
-#                 raise KeyError(f"subset {subset} not in {self.split_table.col_names}")
-#             self.set_one(elem_i, subset, value)
-    
-#     def set_one_subset(self, subset:str, elems:dict[int, bool]):
-#         for elem_i, value in elems.items():
-#             self.set_one(elem_i, subset, value)
-    
-#     def qurey_one(self, elem_i:int, subset:str):
-#         return self.split_table[elem_i, subset]
-    
-#     def qurey_one_elem(self, elem_i:int):
-#         return self.split_table.get_row(elem_i)
-    
-#     def qurey_one_subset(self, subset:str):
-#         return self.split_table.get_column(subset)
-    
-#     def set_one_by_rate(self, elem_i, split_rate):
-#         split_rate = self.process_split_rate(split_rate, len(self.subsets))
-#         total_nums = [sum(self.split_table.get_column(sub).values()) for sub in self.subsets]
-#         if sum(total_nums) == 0:
-#             # all empty, choose the first
-#             subset_idx = 0
-#         else:
-#             rates = np.array(total_nums) / sum(total_nums)
-#             subset_idx = 0
-#             for idx, r in enumerate(rates):
-#                 if r <= split_rate[idx]:
-#                     subset_idx = idx
-#                     break
-#         self.set_one(elem_i, self.subsets[subset_idx], True)
-#         return self.subsets[subset_idx]
-    
-#     def set_all_by_rate(self, split_rate):
-#         split_rate = self.process_split_rate(split_rate, len(self.subsets))
-#         for elem_i in self.split_table.row_names:
-#             self.set_one_by_rate(elem_i, split_rate)
-
-#     @staticmethod
-#     def process_split_rate(split_rate:Union[float, Iterable[float], dict[str, float]], 
-#                             split_num:Union[int, list[str]]):
-#         if isinstance(split_num, int):
-#             subsets = None
-#         elif isinstance(split_num, Iterable):
-#             subsets = split_num
-#             split_num = len(subsets)
-#         else:
-#             raise ValueError("split_num must be int or Iterable")
-        
-#         assert split_num > 1, "len(subsets) must > 1"
-        
-#         if split_num == 2 and isinstance(split_rate, float):
-#             split_rate = (split_rate, 1 - split_rate)
-#         if subsets is not None and isinstance(split_rate, dict):
-#             split_rate = tuple([split_rate[subset] for subset in subsets])
-#         elif isinstance(split_rate, Iterable):
-#             split_rate = tuple(split_rate)
-#         else:
-#             raise ValueError("split_rate must be Iterable or dict[str, float], (or float if len(subsets) == 2)")
-#         assert len(split_rate) == split_num, "splite_rate must have {} elements".format(split_num)
-        
-#         return split_rate
-
-#     ##### as idx list #####
-#     def get_nums(self):
-#         return {subset: sum(self.split_table.get_column(subset).values()) for subset in self.subsets}
-
-#     def get_idx_list(self, subset:Union[str, int]) -> list[int]:
-#         ok_dict = self.split_table.get_column(subset)
-#         return tuple([elem_i for elem_i, ok in ok_dict.items() if ok])
-    
-#     def save_as_txt(self, mask_mode = True):
-#         save_paths = [os.path.join(self.data_path, f"{name}.txt") for name in self.subsets]
-#         save_paths_dict = {subset: save_path for subset, save_path in zip(self.subsets, save_paths)} # subset: save_path
-#         save_array = {}
-#         if mask_mode:
-#             all_elem_i = self.split_table.row_names
-#             for subset, save_path in save_paths_dict.items():
-#                 array = np.full((len(all_elem_i), 2), -1, dtype=int)
-#                 idx_list = self.get_idx_list(subset)
-#                 array[np.isin(array, idx_list), -1] = np.array(idx_list)
-#                 save_array[subset] = array
-#         else:
-#             for subset, save_path in save_paths_dict.items():
-#                 idx_list = self.get_idx_list(subset)
-#                 save_array[subset] = np.array(idx_list)
-        
-#         for subset, array in save_array.items():
-#             np.savetxt(save_paths_dict[subset], array, fmt='%d')
-
-#     @classmethod
-#     def from_txt(cls, txt_name_list:list[str]):
-#         raise NotImplementedError
-    
-#     def __str__(self) -> str:
-#         return f"{self.identity_string()} :: {str(self.get_nums())}"
-
 class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str, bool]], Generic[SP, SPG]):
     SPLIT_FILE = "split.json"
     FILESHANDLE_TYPE = SpliterFilesHandle
@@ -233,14 +75,16 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
 
     ALWAYS_ALLOW_WRITE = True
 
-    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, **kwargs) -> None:
+    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, subsets = None, **kwargs) -> None:
         super().__init__(dataset_node, name, *args, **kwargs)
         self.split_fileshandle:SpliterFilesHandle = self.FILESHANDLE_TYPE.from_name(self, self.SPLIT_FILE)
         self._set_fileshandle(0, self.split_fileshandle)
+
+        subsets = subsets if subsets is not None else self.DEFAULT_SUB_SET
         
         self.__exclusive = False
-
-        for subset in self.DEFAULT_SUB_SET:
+        self.get_idx_dict()
+        for subset in subsets:
             self.add_subset(subset)
 
     @property
@@ -266,6 +110,10 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
     @property
     def subsets(self):
         return self.split_table.col_names
+
+    def stop_writing_hook(self):
+        super().stop_writing_hook()
+        self.cache_to_file(force = True)
 
     #### add\remove\set\query of elem/subset ####
 
@@ -364,6 +212,10 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
     def remove_subset(self, subset:str):
         self.split_table.remove_column(subset, not_exist_ok=True)
 
+    def clear_subset(self):
+        for subset in list(self.subsets):
+            self.remove_subset(subset)
+
     def set_one(self, elem_i:int, subset:str, value:bool):
         self.write_elem(elem_i, {subset: value})
     
@@ -444,9 +296,12 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
     def get_nums(self):
         return {subset: sum(self.split_table.get_column(subset).values()) for subset in self.subsets}
 
-    def get_idx_list(self, subset:Union[str, int]) -> list[int]:
+    def get_idx_list(self, subset:Union[str, int]):
         ok_dict = self.split_table.get_column(subset)
         return tuple([elem_i for elem_i, ok in ok_dict.items() if ok])
+    
+    def get_idx_dict(self):
+        return {subset: self.get_idx_list(subset) for subset in self.subsets}
     
     def save_as_txt(self, mask_mode = True):
         save_paths = [os.path.join(self.data_path, f"{name}.txt") for name in self.subsets]
@@ -472,19 +327,26 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
         raise NotImplementedError
     
     def __str__(self) -> str:
-        return f"{self.identity_string()} :: {str(self.get_nums())}"
-
+        try:
+            nums = str(self.get_nums())
+        except:
+            nums = "nums not init"
+        return f"{self.identity_string()} :: {nums}"
 
 class SpliterGroup(DatasetNode[Spliter, SPG, Table[int, str, bool]], Generic[SP, SPG]):
     DEFAULT_SPLIT_MODE = ["default"]
 
+    def __init__(self, directory, *, flag_name="", parent: DatasetNode = None, split_paras = None) -> None:
+        self.__split_paras:dict[str, list[str]] = split_paras if split_paras is not None else {self.DEFAULT_SPLIT_MODE: None}
+        super().__init__(directory, flag_name=flag_name, parent=parent)
+
     def init_clusters_hook(self):
         super().init_clusters_hook()
-        for split_mode in self.DEFAULT_SPLIT_MODE:
+        for split_mode in self.__split_paras:
             self.add_cluster(Spliter(self, split_mode))
     
-    def init_dataset_attr(self):
-        super().init_dataset_attr()
+    def init_dataset_attr_hook(self):
+        super().init_dataset_attr_hook()
 
         self.__split_mode = self.DEFAULT_SPLIT_MODE[0]
 

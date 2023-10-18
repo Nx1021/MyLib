@@ -83,6 +83,19 @@ def deserialize_object(serialized_file_path):
         elements = pickle.load(file)
         return elements
 
+def test_pickleable(obj):
+    temp_path = "./__pickle_test__.temp"
+    try:
+        serialize_object(temp_path, obj)
+    except:
+        pickleable = False
+    else:
+        pickleable = True
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    return pickleable
+
 def read_file_as_str(file_path):
     with open(file_path, 'r') as file:
         return file.read()
@@ -647,15 +660,37 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         assert isinstance(keys, tuple), "Keys must be a tuple"
         if len(keys) == 2:
             row_name, col_name = keys
-            row_name = self._row_name_filter(row_name)            
-            col_name = self._col_name_filter(col_name)
-            self.__data[row_name][col_name]= value
+            # process row_name
+            if isinstance(row_name, slice):
+                # only support slice(None, None, None)
+                assert row_name == slice(None, None, None), "Only support slice(None, None, None)"
+                row_name_list = self.__row_names[row_name]
+            elif isinstance(row_name, (list, tuple, range)):
+                row_name_list = [self._row_name_filter(x) for x in row_name]
+            else:
+                row_name_list = [self._row_name_filter(row_name)]
+            # process col_name
+            if isinstance(col_name, slice):
+                assert col_name == slice(None, None, None), "Only support slice(None, None, None)"
+                col_name_list = self.__col_names[col_name]
+            elif isinstance(col_name, (list, tuple, range)):
+                col_name_list = [self._col_name_filter(x) for x in col_name]
+            else:
+                col_name_list = [self._col_name_filter(col_name)]
+
+            for row_name in row_name_list:
+                for col_name in col_name_list:
+                    self.__data[row_name][col_name]= value
         else:
             raise ValueError("Keys must be a tuple of length 2")
         
     def __str__(self) -> str:
         if len(self.__data) == 0:
-            return "Empty Table"
+            return f"Empty Table :" + \
+                f"row_name{self.row_names}, col_name{self.col_names}" + \
+                f"default_value_type:{self.default_value_type.__name__}" + \
+                f"row_name_type:{self.row_name_type.__name__}" + \
+                f"col_name_type:{self.col_name_type.__name__}"
 
         max_col_widths = {col_name: len(col_name) for col_name in self.__col_names}
         str_data = {}

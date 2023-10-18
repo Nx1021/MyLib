@@ -48,6 +48,7 @@ DFH = TypeVar('DFH', bound="DisunifiedFilesHandle") # type of the disunified fil
 DLFH = TypeVar('DLFH', bound="DictLikeHandle") # type of the dict-like files handle
 VDMT = TypeVar('VDMT') # type of the value of data cluster
 IADC = TypeVar('IADC', bound="IntArrayDictCluster") # type of the input argument data cluster
+DF = TypeVar('DF', bound="DictFile") # type of the data format
 
 class UnifiedFilesHandle(FilesHandle[UFC, VDMT], Generic[UFC, VDMT]):
     def init_input_hook(self, *,
@@ -68,7 +69,8 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
                  value_type:Callable = None,
                  filllen = 6, 
                  fillchar = '0',
-                 alternate_suffix:list = None, 
+                 alternate_suffix:list = None,
+                 flag_name = "",
                  **kwargs
                  ) -> None:
         self.suffix = suffix
@@ -81,7 +83,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         self.filllen = filllen
         self.fillchar = fillchar
         self.alternate_suffix = alternate_suffix if alternate_suffix is not None else []  
-        super().__init__(dataset_node, name)
+        super().__init__(dataset_node, name, flag_name=flag_name)
         self.cache_priority = False 
 
     #####
@@ -117,7 +119,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         init the io_metas of the data cluster
         '''
         super().init_io_metas()
-        self.change_dir_meta:IOMeta["UnifiedFileCluster", VDMT] = self._change_dir(self)
+        self.change_dir_meta:IOMeta[UFC, VDMT, UFH] = self._change_dir(self)
 
     class _read(FilesCluster._read[_FCT, _VDMT, _FHT]):
         @property
@@ -145,15 +147,14 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
             sub_dir = value.sub_dir
             return super().get_FilesHandle(src, dst, value, sub_dir = sub_dir, **other_paras)
 
-    def clear(self, force=False, clear_both=True):
+    def clear(self, * ,force=False, clear_both=True):
         super().clear(force = force, clear_both=clear_both)
 
-
-    def write(self, data_i:int, value:VDMT, sub_dir = "", *, force = False, **other_paras) -> None:
+    def write(self, data_i:int, value:VDMT, *, sub_dir = "", force = False, **other_paras) -> None:
         return super().write(data_i, value, sub_dir=sub_dir, force=force, **other_paras)
     
-    def append(self, value: VDMT, sub_dir = "", force=False, **other_paras):
-        return super().append(value, force, sub_dir = sub_dir, **other_paras)
+    def append(self, value: VDMT, *, sub_dir = "", force=False, **other_paras):
+        return super().append(value, sub_dir = sub_dir, force = force,  **other_paras)
     #####################
 
     #######################
@@ -172,15 +173,15 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         start = time.time()
         with e0.get_writer():
             for i in range(5):    
-                e0.append((np.random.random((640, 480, 3))*255).astype(np.uint8), "sub0")
+                e0.append((np.random.random((640, 480, 3))*255).astype(np.uint8), sub_dir="sub0")
         print(time.time() - start)
 
         e0.cache_priority = False
         with e0.get_writer():
             for i in range(5):    
-                e0.append((np.random.random((640, 480, 3))*255).astype(np.uint8), "sub1")
+                e0.append((np.random.random((640, 480, 3))*255).astype(np.uint8), sub_dir="sub1")
 
-        for fh in e0.query_fileshandle(0, 'end'):
+        for fh in e0.query_all_fileshandle():
             print(fh)
 
         with e0.get_writer().allow_overwriting():
@@ -192,7 +193,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         e0.open()
 
         print()
-        for fh in e0.query_fileshandle(0, 'end'):
+        for fh in e0.query_all_fileshandle():
             print(fh)
 
         start = time.time()
@@ -201,7 +202,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
                 e1.append(array)
         print(time.time() - start)
         print()
-        for fh in e1.query_fileshandle(0, 'end'):
+        for fh in e1.query_all_fileshandle():
             print(fh)
 
         e1.file_to_cache()
@@ -215,10 +216,10 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         with e1.get_writer():
             e1.remove(0, remove_both=True)
             e1.remove(5, remove_both=True)
-        e1.make_continuous(True)
+        e1.make_continuous(force = True)
 
         print()
-        for fh in e1.query_fileshandle(0, 'end'):
+        for fh in e1.query_all_fileshandle():
             print(fh)
 
         e0.clear(force=True)
@@ -251,6 +252,12 @@ class DisunifiedFilesHandle(FilesHandle[DFC, VDMT], Generic[DFC, VDMT]):
 class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC, DSNT, VDMT]):
     FILESHANDLE_TYPE = DisunifiedFilesHandle
 
+    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, flag_name = "", fileshandle_list = None, **kwargs) -> None:
+        super().__init__(dataset_node, name, *args, flag_name=flag_name, **kwargs)
+        fileshandle_list = [] if fileshandle_list is None else fileshandle_list
+        for fh in fileshandle_list:
+            self._set_fileshandle(self.data_i_upper, fh)
+
     #####
     def create_fileshandle(self, src:int, dst:int, value:Any, **other_paras):
         if not self.MULTI_FILES:
@@ -263,6 +270,9 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
         else:
             raise NotImplementedError
     #####
+    @property
+    def all_files_exist(self):
+        return all([fh.all_file_exist for fh in self.MemoryData.values()])
 
     @property
     def file_names(self):
@@ -275,6 +285,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
         self._set_fileshandle(self.data_i_upper, fh)
 
     def cvt_key(self, key:Union[int, str, DisunifiedFilesHandle]):
+        key = super().cvt_key(key)
         if isinstance(key, int):
             return key
         elif isinstance(key, str):
@@ -299,11 +310,22 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
         def get_file_core_func(self, src_file_handle: DisunifiedFilesHandle, dst_file_handle: DisunifiedFilesHandle, value) -> Callable[..., Any]:
             return dst_file_handle.write_func
         
+    def rebuild(self):
+        run_rebuild = True
+        for dm in self._registry.values():
+            if dm.data_path == self.data_path:
+                # to avoid add some unexcepted fileshandle
+                # can only be setted mannully
+                run_rebuild = False
+                break
+        if run_rebuild:
+            super().rebuild()
+
     @staticmethod
     def Test():
         def print_all_fh(fc:DisunifiedFileCluster):
             print()
-            for fh in fc.query_fileshandle(0, 'end'):
+            for fh in fc.query_all_fileshandle():
                 print(fh)
 
         top_dir = os.path.join(os.getcwd(), "DisunifiedFileClusterTest")
@@ -345,7 +367,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
 
         with d1.get_writer().allow_overwriting():
             d1.remove(0, remove_both=True)
-        d1.make_continuous(True)
+        d1.make_continuous(force = True)
 
         print_all_fh(d1)
 
@@ -431,7 +453,7 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH
         def enter_hook(self):
             self.obj.save_mode = self.obj.SAVE_STREAMLY
             streams = []
-            for fh in self.obj.query_fileshandle(0, 'end'):
+            for fh in self.obj.query_all_fileshandle():
                 fh: DictLikeHandle
                 streams.append(JsonIO.Stream(fh.get_path(), True))
             self.streams.extend(streams)
@@ -452,14 +474,14 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH
             stream = self.streams[data_i]
             stream.write({elem_i: value})
 
-    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, **kwargs) -> None:
-        super().__init__(dataset_node, name, *args, **kwargs)
+    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, flag_name = "", **kwargs) -> None:
+        super().__init__(dataset_node, name, *args, flag_name = flag_name, **kwargs)
         self.__save_mode = self.SAVE_AFTER_CLOSE
         self.stream_writer = self.StreamlyWriter(self)
         
     @property
     def caches(self):
-        return [fh.cache for fh in self.query_fileshandle(0, 'end')]
+        return [fh.cache for fh in self.query_all_fileshandle()]
 
     @property
     def save_mode(self):
@@ -575,7 +597,7 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH
     def sort_elem(self):
         if self.write_streamly:
             raise ValueError("can't pop item while writing streamly")
-        for dict_fh in self.query_fileshandle(0, 'end'):
+        for dict_fh in self.query_all_fileshandle():
             dict_fh:DictLikeHandle
             dict_fh.sort_cache()
     ##########
@@ -607,7 +629,7 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH
     def from_cluster(cls:type[DLC], cluster:DLC, dataset_node:DSNT = None, name = None, *args, **kwargs) -> DLC:
         new_cluster = super().from_cluster(cluster, dataset_node=dataset_node, name=name, *args, **kwargs)
         new_cluster.open()
-        for fh in cluster.query_fileshandle(0, 'end'):
+        for fh in cluster.query_all_fileshandle():
             new_fh = cls.FILESHANDLE_TYPE.from_fileshandle(new_cluster, fh, cache={})
             new_cluster._set_fileshandle(new_cluster.data_i_upper, new_fh)
         return new_cluster
@@ -616,7 +638,7 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH
     def Test():
         def print_all_fh(fc:DictLikeCluster):
             print()
-            for fh in fc.query_fileshandle(0, 'end'):
+            for fh in fc.query_all_fileshandle():
                 print(fh)
 
         top_dir = os.path.join(os.getcwd(), "DictLikeClusterTest")
@@ -670,12 +692,89 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH
 
         with d1.get_writer().allow_overwriting():
             d1.remove(0, remove_both=True)
-        d1.make_continuous(True)
+        d1.make_continuous(force = True)
 
         print_all_fh(d1)
 
         d0.clear(force=True)
         d1.clear(force=True)      
+
+def cache_to_file_decorator(func):
+    def wrapper(self:"DictFile", *args, **kwargs):
+        rlt = func(self, *args, **kwargs)
+        self.cache_to_file(force=True)
+        return rlt
+    return wrapper
+
+class SingleFile:
+    pass
+    # TODO 仅 包含一个文件，不保存.memorydata 而是直接保存到文件。每启动时重建memorydata
+
+
+class DictFile(DisunifiedFileCluster[DFH, DFC, DSNT, dict], Generic[DFH, DFC, DSNT]):
+    def _set_fileshandle(self, data_i, fileshandle: DFH):
+        if len(self.MemoryData) > 0:
+            raise ValueError("DictFile can only have one fileshandle")
+        super()._set_fileshandle(data_i, fileshandle)
+        
+    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, flag_name="", file_name = ".json", **kwargs) -> None:
+        super().__init__(dataset_node, name, *args, flag_name=flag_name, fileshandle_list=[], **kwargs)
+        json_file = DictLikeHandle.from_name(self, file_name, read_func=JsonIO.load_json, write_func=JsonIO.dump_json)
+        self._set_fileshandle(0, json_file)
+        self.write_synchronous = True
+        self.cache_priority = True
+        
+    def __unsafe_get_cache(self) -> dict:
+        return self.query_fileshandle(0)._unsafe_get_cache()
+
+    @cache_to_file_decorator
+    def write_info(self, key, value):
+        self.__unsafe_get_cache()[key] = value
+        self.cache_to_file(force=True)
+        
+    def read_info(self, key):
+        return self.read(0)[key]
+    
+    def has_info(self, key):
+        return key in self.read(0)
+    
+    def __getitem__(self, key: str):
+        return self.read_info(key)
+    
+    def __setitem__(self, key: str, value):
+        self.write_info(key, value)
+
+    def __contains__(self, i):
+        return self.has_info(i)
+    
+    @cache_to_file_decorator
+    def update(self, *arg, **kw):
+        return self.__unsafe_get_cache().update(*arg, **kw)
+    
+    @cache_to_file_decorator
+    def pop(self, *arg, **kw):
+        return self.__unsafe_get_cache().pop(*arg, **kw)
+    
+    @cache_to_file_decorator
+    def popitem(self, *arg, **kw):
+        return self.__unsafe_get_cache().popitem(*arg, **kw)
+    
+    @cache_to_file_decorator
+    def clear(self, *arg, **kw):
+        return self.__unsafe_get_cache().clear(*arg, **kw)
+    
+    def get(self, *arg, **kw):
+        return self.__unsafe_get_cache().get(*arg, **kw)
+    
+    @cache_to_file_decorator
+    def setdefault(self, *arg, **kw):
+        return self.__unsafe_get_cache().setdefault(*arg, **kw)
+    
+    def __len__(self):
+        return len(self.read(0))
+    
+    def __iter__(self):
+        return self.read(0)
 
 class IntArrayDictCluster(UnifiedFileCluster[UFH, IADC, DSNT, dict[int, np.ndarray]], Generic[UFH, IADC, DSNT]):
     def __init__(self, dataset_node:DSNT, name: str, array_shape:tuple[int], array_fmt:str = "",

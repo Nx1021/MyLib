@@ -23,7 +23,7 @@ from typing import Any, Union, Callable, TypeVar, Generic, Iterable, Generator
 from functools import partial
 
 from .IOAbstract import FilesCluster, FilesHandle, DatasetNode
-from .datacluster import UnifiedFilesHandle, UnifiedFileCluster,\
+from .dataCluster import UnifiedFilesHandle, UnifiedFileCluster,\
                         DisunifiedFilesHandle, DisunifiedFileCluster,\
                         DictLikeCluster, DictLikeHandle
 from .spliter import Spliter, SpliterGroup
@@ -136,9 +136,12 @@ def test_dataset():
 
 
 class Dataset(DatasetNode[FCT, DST, VDST], Generic[FCT, DST, VDST]):
+
+    SPLIT_PARA = {"default": ["train", "val"]}
+
     def init_clusters_hook(self):
         super().init_clusters_hook()
-        self.spliter_group = SpliterGroup("split_group", parent=self)
+        self.spliter_group = SpliterGroup("split_group", parent=self, split_paras=self.SPLIT_PARA)
 
     @property
     def split_mode(self):

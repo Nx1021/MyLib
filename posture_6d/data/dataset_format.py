@@ -2128,7 +2128,7 @@ class DatasetNode(InstanceRegistry, WriteController, ABC, Generic[DCT, VDST]):
 
         self.__inited = False # if the dataset has been inited   
         self.__init_node(parent)
-        self.init_dataset_attr()
+        self.init_dataset_attr_hook()
         self.__init_clusters()
         self.__inited = True # if the dataset has been inited
 
@@ -2138,7 +2138,7 @@ class DatasetNode(InstanceRegistry, WriteController, ABC, Generic[DCT, VDST]):
         self.children:list[DatasetNode] = []
         self.move_node(parent)
 
-    def init_dataset_attr(self):
+    def init_dataset_attr_hook(self):
         def is_directory_inside(base_dir, target_dir):
             base_dir:str = os.path.abspath(base_dir)
             target_dir:str = os.path.abspath(target_dir)
@@ -2671,8 +2671,8 @@ class DatasetFormat(DatasetNode[DCT, VDST]):
 
         self.split_default_rate = split_rate
 
-    def init_dataset_attr(self):
-        super().init_dataset_attr()
+    def init_dataset_attr_hook(self):
+        super().init_dataset_attr_hook()
         self.spliter_group = SpliterGroup(os.path.join(self.directory, self.SPLIT_DIR), 
                                     self.DEFAULT_SPLIT_TYPE,
                                     self)

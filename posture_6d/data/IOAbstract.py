@@ -23,16 +23,17 @@ from abc import ABC, abstractmethod
 from typing import Any, Union, Callable, TypeVar, Generic, Iterable, Generator
 from functools import partial
 import copy
+import importlib
 
 from . import Posture, JsonIO, JSONDecodeError, Table, extract_doc, search_in_dict, int_str_cocvt,\
-      serialize_object, deserialize_object, read_file_as_str, write_str_to_file
+      serialize_object, deserialize_object, test_pickleable, read_file_as_str, write_str_to_file
 from .viewmeta import ViewMeta, serialize_image_container, deserialize_image_container
 from .mesh_manager import MeshMeta
 
 DEBUG = False
 
 IOSM = TypeVar('IOSM', bound="IOStatusManager") # type of the IO status manager
-
+RGSITEM = TypeVar('RGSITEM')
 DMT  = TypeVar('DMT',  bound="DataMapping") # type of the cluster
 DSNT = TypeVar('DSNT', bound='DatasetNode') # dataset node type
 FCT = TypeVar('FCT', bound="FilesCluster") # type of the files cluster
@@ -74,6 +75,21 @@ class ClusterIONotExecutedWarning(ClusterWarning):
 class ClusterNotRecommendWarning(ClusterWarning):
     pass
 
+
+def method_exit_hook_decorator(cls, func:Callable, exit_hook_func, enter_condition_func = None):
+    enter_condition_func = (lambda : True) if enter_condition_func is None else enter_condition_func
+    def wrapper(self, *args, **kw):
+        if enter_condition_func(self):
+            func(self, *args, **kw)
+            if cls == self.__class__:
+                exit_hook_func(self)
+                if DEBUG:
+                    print(f"{self} runs {func.__name__}")
+        else:
+            if DEBUG:
+                print(f"{self} skips {func.__name__}")
+    return wrapper
+
 class IOStatusManager():
     WRITING_MARK = '.writing'
 
@@ -87,9 +103,7 @@ class IOStatusManager():
 
     _DEBUG = False
 
-    def __init__(self, name) -> None:
-        self.name = name
-
+    def __init__(self) -> None:
         self.__closed = True
         self.__readonly = True
         self.__wait_writing = True
@@ -149,11 +163,11 @@ class IOStatusManager():
 
         def __enter__(self):
             if self.working:
-                raise RuntimeError(f"the IOContext of {self.obj.__class__}:: {self.obj.__class__.__name__}:{self.obj.name} is already working")
+                raise RuntimeError(f"the IOContext of {self.obj.identity_string()} is already working")
             
             self.working = True
             if IOStatusManager._DEBUG:
-                print(f"enter:\t{self.obj.__class__}:: {self.obj.__class__.__name__}:{self.obj.name}")
+                print(f"enter:\t{self.obj.identity_string()}")
             
             self.enter_hook()
 
@@ -167,7 +181,7 @@ class IOStatusManager():
             else:
                 rlt = False
                 if IOStatusManager._DEBUG:
-                    print(f"exit:\t{self.obj.__class__}:: {self.obj.__class__.__name__}:{self.obj.name}")
+                    print(f"exit:\t{self.obj.identity_string()}")
                 rlt = self.exit_hook()
                 self.working = False
                 return rlt
@@ -216,6 +230,10 @@ class IOStatusManager():
 
     @abstractmethod
     def get_writing_mark_file(self) -> str:
+        pass
+
+    @abstractmethod
+    def identity_string(self) -> str:
         pass
 
     def mark_exist(self):
@@ -365,14 +383,14 @@ class IOStatusManager():
     def is_closed(self, with_warning = False):
         '''Method to check if the cluster is closed.'''
         if with_warning and self.closed:
-            warnings.warn(f"{self.__class__.__name__}:{self.name} is closed, any I/O operation will not be executed.",
+            warnings.warn(f"{self.identity_string()} is closed, any I/O operation will not be executed.",
                             ClusterIONotExecutedWarning)
         return self.closed
 
     def is_readonly(self, with_warning = False):
         '''Method to check if the cluster is read-only.'''
         if with_warning and self.readonly:
-            warnings.warn(f"{self.__class__.__name__}:{self.name} is read-only, any write operation will not be executed.",
+            warnings.warn(f"{self.identity_string()} is read-only, any write operation will not be executed.",
                 ClusterIONotExecutedWarning)
         return self.readonly
     
@@ -407,6 +425,59 @@ class IOStatusManager():
                 rlt = func(self, *args, **kwargs)
             return rlt
         return wrapper
+
+class _RegisterInstance(ABC, Generic[RGSITEM]):
+    _registry:dict[str, RGSITEM] = {}
+    INDENTITY_PARA_NAMES = []
+
+    def __new__(cls, *args, **kwargs):
+        obj = super().__new__(cls)
+        obj.init_identity(*args, **kwargs)  # initialize identity_paras
+        obj._lock_identity_paras()          # lock it
+        id_str = obj.identity_string()
+        if id_str in cls._registry:
+            obj = cls.get_instance(id_str, obj)
+        else:
+            cls.register(id_str, obj)
+        return obj
+
+    @classmethod
+    @abstractmethod
+    def register(cls, identity_string, obj):
+        pass
+
+    @classmethod
+    @abstractmethod
+    def get_instance(cls, identity_string, obj):
+        pass
+
+    @abstractmethod
+    def identity_string(self):
+        pass
+
+    @abstractmethod
+    def identity_name(self):
+        pass
+
+    @abstractmethod
+    def init_identity(self, *args, **kwargs):
+        '''
+        principle: the parameter of identity can not be changed once it has been inited
+        '''
+        pass
+
+    def _lock_identity_paras(self, lock = True):
+        self._identity_paras_locked = lock  
+
+    def __getattr__(self, name):
+        if name == "_identity_paras_locked":
+            return False
+        raise AttributeError(f"has not attribute {name}")
+
+    def __setattr__(self, name: str, value) -> Any:
+        if self._identity_paras_locked and name in self.INDENTITY_PARA_NAMES:
+            raise AttributeError(f"cannot set {name}")
+        super().__setattr__(name, value)
 
 class _Prefix(dict[str, str]):
     KW_PREFIX = "prefix"
@@ -516,6 +587,9 @@ class CacheProxy():
     KW_cache = "cache"
     KW_value_type = "value_type"
 
+    _unpickleable_type  = []
+    _pickleable_type    = []
+
     def __init__(self, cache, value_type = None, value_init_func:Callable = None) -> None:
         self.__cache = None
         self.synced = False
@@ -552,7 +626,23 @@ class CacheProxy():
 
     def as_dict(self):
         dict_ = {}
-        dict_[self.KW_cache] = self.__cache
+
+        cache = self.__cache
+        if type(cache) in self._unpickleable_type:
+            unpickleable = True
+        elif type(cache) in self._pickleable_type:
+            unpickleable = False
+        else:
+            unpickleable = not test_pickleable(cache)
+            if unpickleable:
+                self._unpickleable_type.append(type(cache))
+            else:
+                self._pickleable_type.append(type(cache))
+
+        if unpickleable:
+            cache = None
+
+        dict_[self.KW_cache] = cache
         dict_[self.KW_value_type] = self.__value_type
         return dict_
     
@@ -576,7 +666,7 @@ class CacheProxy():
                 return True
         return False
 
-class FilesHandle(Generic[FCT, VDMT]):
+class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     '''
     immutable object, once created, it can't be changed.
     '''
@@ -615,21 +705,47 @@ class FilesHandle(Generic[FCT, VDMT]):
 
     KW_INIT_WITHOUT_CACHE = "INIT_WITHOUT_CACHE"
 
-    _filehandles:dict[str, list["FilesHandle"]] = {}
+    RETURN_INITED = True
 
-    IGNORE_CREATE_SAME_PATH_FH_WARNING = False
+    _unpickleable_func = []
+    _pickleable_func   = []
+    KW_FUNC_NAME    = "func_name"
+    KW_FUNC_MODULE = "func_module"
+    KW_FUNC_BIND_ARGS = "func_bind_args"
+    KW_FUNC_BIND_KWARGS = "func_bind_kwargs"
 
-    def __init__(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
+    ###
+    INDENTITY_PARA_NAMES = ["sub_dir", "corename", "suffix", "prefix", "appendnames", 
+                            "prefix_joiner", "appendnames_joiner", "data_path"]
+    @classmethod
+    def register(cls, identity_string, obj):
+        cls._registry[identity_string] = obj
+
+    @classmethod
+    def get_instance(cls, identity_string, orig_obj):
+        if cls.RETURN_INITED:
+            obj = cls._registry[identity_string]
+            return obj
+        else:
+            cls.RETURN_INITED = True
+            return orig_obj
+
+    def identity_string(self):
+        return self.get_path()
+
+    def identity_name(self):
+        return self.corename
+
+    def init_identity(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
                  prefix:str = "", appendnames:list[str] = None,  # type: ignore
                  prefix_joiner:str = '', appendnames_joiner:str = '',
                  data_path = "",
                  read_func:Callable = None, write_func:Callable = None, 
-                 cache = None, value_type:Callable = None) -> None: #type: ignore
-        if hasattr(self, "_inited"):
-            return
-        super().__init__()
-        self.cluster:FCT = cluster
-
+                 cache = None, value_type:Callable = None):
+        '''
+        principle: the parameter of identity can not be changed once it has been inited
+        '''
+        self.cluster = cluster
         (   sub_dir, corename, suffix, 
             prefix, appendnames, prefix_joiner, appendnames_joiner, 
             data_path, 
@@ -656,6 +772,47 @@ class FilesHandle(Generic[FCT, VDMT]):
 
         self._prefix_obj         = _Prefix(prefix, prefix_joiner)
         self._appendnames_obj    = _AppendNames(appendnames, appendnames_joiner)
+    ###
+                                            
+    def __init_subclass__(cls, **kwargs):
+        ### __init__ ###
+        cls.__init__ = method_exit_hook_decorator(cls, cls.__init__, cls.set_inited, cls.has_not_inited)
+        super().__init_subclass__(**kwargs)
+
+    def set_inited(self):
+        self._inited = True
+
+    def has_not_inited(self):
+        try:
+            self._inited
+        except AttributeError:
+            return True
+        else:
+            return False
+
+    def __init__(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
+                 prefix:str = "", appendnames:list[str] = None,  # type: ignore
+                 prefix_joiner:str = '', appendnames_joiner:str = '',
+                 data_path = "",
+                 read_func:Callable = None, write_func:Callable = None, 
+                 cache = None, value_type:Callable = None) -> None: #type: ignore
+        super().__init__()
+        ### init_identity has been called ###
+        (   sub_dir, corename, suffix, 
+            prefix, appendnames, prefix_joiner, appendnames_joiner, 
+            data_path, 
+            read_func, write_func, 
+            cache, value_type) =\
+            self.init_input_hook(sub_dir = sub_dir, corename = corename, suffix = suffix, 
+                                prefix = prefix, appendnames = appendnames, 
+                                prefix_joiner = prefix_joiner, appendnames_joiner = appendnames_joiner,
+                                data_path = data_path,
+                                read_func = read_func, write_func = write_func,
+                                cache = cache, value_type = value_type)
+
+        for func in [read_func, write_func]:
+            if hasattr(func, "__code__"):
+                assert not func.__code__.co_name == '<lambda>', "function shuold not be lambda"
 
         self.read_func = read_func 
         self.write_func = write_func 
@@ -667,34 +824,15 @@ class FilesHandle(Generic[FCT, VDMT]):
                 cache = self.read()
             else:
                 cache = cache
-
+        Table.get_column
         self.cache_proxy:CacheProxy = CacheProxy(cache, value_type, self.DEFAULT_VALUE_INIT_FUNC)
 
         self.init_additional_hook()
 
-        self._inited = True
-
-        self._summary_ref()
-
     @classmethod
-    def _ignore_create_same_path_fh_warning_once(cls):
-        FilesHandle.IGNORE_CREATE_SAME_PATH_FH_WARNING = True
+    def create_temp(cls):
+        cls.RETURN_INITED = False
         return cls
-
-    def _summary_ref(self):
-        id_str = self.get_path()
-        if id_str in self._filehandles:
-            for obj in list(self._filehandles[id_str]):
-                ref_count = sys.getrefcount(obj) - 1
-                if ref_count == 1:
-                    idx = [id(x) for x in self._filehandles[id_str]].index(id(obj))
-                    self._filehandles[id_str].pop(idx)
-            if len(self._filehandles[id_str]) > 0:
-                if FilesHandle.IGNORE_CREATE_SAME_PATH_FH_WARNING:
-                    FilesHandle.IGNORE_CREATE_SAME_PATH_FH_WARNING = False
-                else:
-                    warnings.warn(f"the FilesHandle:{id_str} has been created, please use the same FilesHandle", IOStatusWarning)
-        self._filehandles.setdefault(id_str, []).append(self)
 
     def __hash__(self):
         return hash(self.get_path()) # + id(self)
@@ -902,6 +1040,58 @@ class FilesHandle(Generic[FCT, VDMT]):
             synced = False
         self.cache_proxy.synced = synced
 
+    @staticmethod
+    def _parse_partial(partial_obj:partial):
+        func = partial_obj.func
+        args = partial_obj.args
+        kwargs = partial_obj.keywords
+        return func, args, kwargs
+
+    @classmethod
+    def export_func(cls, func:Callable):
+        if func in cls._unpickleable_func:
+            unpickleable = True
+        elif func in cls._pickleable_func:
+            unpickleable = False
+        else:
+            unpickleable = not test_pickleable(func)
+            if unpickleable:
+                cls._unpickleable_func.append(func)
+            else:
+                cls._pickleable_func.append(func)
+        if unpickleable:
+            if isinstance(func, partial):
+                raw_func = func.func
+                bind_args = func.args
+                bind_kwargs = func.keywords
+                func = raw_func
+            else:
+                bind_args = tuple()
+                bind_kwargs = {}
+            func_info = {cls.KW_FUNC_NAME: func.__name__, 
+                         cls.KW_FUNC_MODULE: func.__module__,
+                         cls.KW_FUNC_BIND_ARGS: bind_args,
+                         cls.KW_FUNC_BIND_KWARGS: bind_kwargs}
+            return func_info
+        else:
+            return func
+        
+    @classmethod
+    def import_func(cls, import_obj):
+        if isinstance(import_obj, dict):
+            module = importlib.import_module(import_obj[cls.KW_FUNC_MODULE])
+            func = getattr(module, import_obj[cls.KW_FUNC_NAME])
+            bind_args   = import_obj[cls.KW_FUNC_BIND_ARGS]
+            bind_kwargs = import_obj[cls.KW_FUNC_BIND_KWARGS]
+            if len(bind_args) > 0 or len(bind_kwargs) > 0:
+                func = partial(func, *bind_args, **bind_kwargs)
+        elif isinstance(import_obj, Callable):
+            func = import_obj
+        else:
+            raise ValueError(f"unknown function, try to install module:{import_obj[cls.KW_FUNC_MODULE]}")
+
+        return func
+
     def as_dict(self):
         dict_ = {}
         dict_[self.KW_data_path]     = self.data_path
@@ -910,8 +1100,8 @@ class FilesHandle(Generic[FCT, VDMT]):
         dict_[self.KW_suffix]        = self.suffix
         dict_[self.KW_prefix]        = self._prefix_obj.as_dict()
         dict_[self.KW_appendnames]   = self._appendnames_obj.as_dict()
-        dict_[self.KW_read_func]     = self.read_func
-        dict_[self.KW_write_func]    = self.write_func
+        dict_[self.KW_read_func]     = self.export_func(self.read_func)
+        dict_[self.KW_write_func]    = self.export_func(self.write_func)
         dict_[self.KW_cache]         = self.cache_proxy.as_dict()
         return dict_
 
@@ -927,8 +1117,8 @@ class FilesHandle(Generic[FCT, VDMT]):
         appendnames             = dict_[cls.KW_appendnames][_AppendNames.KW_APPENDNAMES]
         appendnames_joiner      = dict_[cls.KW_appendnames][_AppendNames.KW_JOINER]
 
-        read_func       = dict_[cls.KW_read_func]
-        write_func      = dict_[cls.KW_write_func]
+        read_func       = cls.import_func(dict_[cls.KW_read_func])
+        write_func      = cls.import_func(dict_[cls.KW_write_func])
 
         cache           = dict_[cls.KW_cache][CacheProxy.KW_cache]
         value_type      = dict_[cls.KW_cache][CacheProxy.KW_value_type]
@@ -1081,8 +1271,8 @@ class FilesHandle(Generic[FCT, VDMT]):
             read_func = get_with_priority(read_func, cls.DEFAULT_READ_FUNC, _read_func)
             write_func = get_with_priority(write_func, cls.DEFAULT_WRITE_FUNC, _write_func)
             value_type = get_with_priority(value_type, cls.DEFAULT_VALUE_TYPE, _value_type)
-        else:
-            warnings.warn(f"can't find default file type for {suffix}, use str as default value_type", ClusterNotRecommendWarning)
+        # else:
+        #     warnings.warn(f"can't find default file type for {suffix}", ClusterNotRecommendWarning)
 
         return read_func, write_func, value_type
 
@@ -1165,9 +1355,8 @@ class BinDict(dict[_KT, _VT], Generic[_KT, _VT]):
     def __repr__(self):
         return f"{self.__class__.__name__}({super().__repr__()})"
 
-class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
-    _registry:dict = {}
 
+class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generic[_VT, DMT, VDMT]):
     _DMT = TypeVar('_DMT', bound="DataMapping")
     _VDMT = TypeVar('_VDMT')
 
@@ -1182,87 +1371,74 @@ class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
     save_memory_func:Callable[[str, dict], None]   = serialize_object
 
     #############
-    def __new__(cls, top_directory:str, name: str = "", *args, **kwargs):
-        if cls is DataMapping:
-            raise TypeError("DataMapping cannot be instantiated")
-        # single instance
-        obj = super().__new__(cls)
-        obj.init_identity(top_directory, name, *args, **kwargs)
-        if obj.identity_string() in cls._registry:
-            obj = cls._registry[obj.identity_string()]
-        else:
-            cls._registry[obj.identity_string()] = obj
-        return obj
-
-    @staticmethod
-    def parse_identity_string(identity_string:str):
-        cls_name, directory_name = identity_string.split(':')
-        directory, mapping_name = os.path.split(directory_name)
-        return cls_name, directory, mapping_name
+    INDENTITY_PARA_NAMES = ["_top_directory", "mapping_name", "flag_name"]
+    @classmethod
+    def register(cls, identity_string, obj:"DataMapping"):
+        for other_obj in cls._registry.values():
+            if isinstance(other_obj, DataMapping) and obj.MemoryData_path == other_obj.MemoryData_path:
+                raise ValueError(f"{obj} and {other_obj} has the same MemoryData_path, try set 'flag_name' to distinguish them")
+        cls._registry[identity_string] = obj
 
     @classmethod
-    def gen_identity_string(cls, data_path):
-        return f"{cls.__name__}:{data_path}"
+    def get_instance(cls, identity_string, _obj):
+        obj = cls._registry[identity_string]
+        return obj
 
     def identity_string(self):
-        return self.gen_identity_string(self.data_path)
+        return f"{self.__class__.__name__}:{self.data_path}|{self.flag_name}"
 
-    def init_identity(self, top_directory:str, name: str, *args, **kwargs):
+    def identity_name(self):
+        if self.flag_name != "":
+            return self.flag_name
+        else:
+            return self.mapping_name
+
+    def init_identity(self, top_directory:str, name: str, *args, flag_name = "", **kwargs):
+        '''
+        principle: the parameter of identity can not be changed once it has been inited
+        '''
         self._unfinished_operation = 0
         self._top_directory = top_directory
-        self.mapping_name = name        
-
-    def key_identity_string(self):
-        return f"{self.__class__.__name__}:{self.name}"        
+        self.mapping_name = name  
+        self.flag_name = flag_name         
     #############
-
-    # def __init_subclass__(cls, **kwargs):
-    #     write_func_name = [DataMapping.write.__name__, 
-    #                        DataMapping.modify_key.__name__, 
-    #                        DataMapping.remove.__name__, 
-    #                        DataMapping.merge_from.__name__, 
-    #                        DataMapping.append.__name__,
-    #                        DataMapping.clear.__name__,
-    #                        DataMapping.make_continuous.__name__]
-    #     for name in write_func_name:
-    #         sub_cls_func:Callable = getattr(cls, name)
-    #         if sub_cls_func.__name__ == name:
-    #             setattr(cls, name, IOStatusManager.force_decorator(sub_cls_func))
-    #     super().__init_subclass__(**kwargs)
 
     def __init_subclass__(cls, **kwargs):
         ### __init__ ###
-        cls.__init__ = cls.method_exit_hook_decorator(cls.__init__, cls.try_open)
+        cls.__init__ = method_exit_hook_decorator(cls, cls.__init__, cls.try_open, cls.has_not_inited)
         ### clear ###
-        cls.clear = cls.method_exit_hook_decorator(cls.clear, cls._clear_empty_dir)
+        cls.clear = method_exit_hook_decorator(cls, cls.clear, cls._clear_empty_dir)
         super().__init_subclass__(**kwargs)
 
-    def __init__(self, top_directory:Union[str, "DatasetNode"], name: str, *args, **kwargs) -> None:
+    def __init__(self, top_directory:Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs) -> None:
         '''
         Initialize the data cluster with the provided top_directory, name, and registration flag.
         '''
-        IOStatusManager.__init__(self, name)
+        IOStatusManager.__init__(self)
         Generic.__init__(self)
         self._MemoryData:dict[int, _VT] = self.load_postprocess({})
 
         self.cache_priority     = True
         self.strict_priority_mode    = False
         self.write_synchronous  = False
-        self.changed_since_opening = False
-
-    @classmethod
-    def method_exit_hook_decorator(cls, func, hook_func):
-        def wrapper(self:DataMapping, *args, **kw):
-            func(self, *args, **kw)
-            if cls == self.__class__:
-                hook_func(self)
-        return wrapper
+        self._MemoryData_modified = True
 
     def try_open(self):
         if os.path.exists(self.data_path):
             self.open()  # Opens the cluster for operation.
         else:
             self.close()
+        if DEBUG:
+            print(f"{self.identity_string()} inited")
+        self._inited = True
+
+    def has_not_inited(self):
+        try:
+            self._inited
+        except AttributeError:
+            return True
+        else:
+            return False
 
     def _clear_empty_dir(self):
         for r, d, f in os.walk(self.data_path):
@@ -1277,6 +1453,10 @@ class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
     def top_directory(self, value):
         return None
 
+    @property
+    def parent_data_mapping(self) -> DMT:
+        raise NotImplementedError
+
     def make_path(self):
         if not os.path.exists(self.data_path):
             if '.' in os.path.basename(self.data_path):
@@ -1290,28 +1470,36 @@ class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
     def open_hook(self):
         self.make_path()
         self.load()
-        self.reset_changed()
+        self._reset_MemoryData_modified()
         
     def stop_writing_hook(self):
         self.sort()
         self.save()
+        if self.parent_data_mapping is not None:
+            self.parent_data_mapping.save()
 
     def get_writing_mark_file(self):
         return os.path.join(self.top_directory, self.mapping_name, self.WRITING_MARK)
     
-    def set_changed(self):
-        self.changed_since_opening = True
+    def _set_MemoryData_modified(self):
+        self._MemoryData_modified = True
+        if self.parent_data_mapping is not None:
+            self.parent_data_mapping._set_MemoryData_modified()
 
-    def reset_changed(self):
-        self.changed_since_opening = False
+    def _reset_MemoryData_modified(self):
+        self._MemoryData_modified = False
     
+    @property
+    def MemoryData_modified(self):
+        return self._MemoryData_modified
+
     @property
     def MemoryData(self):
         return self._MemoryData
     
     @property
     def MemoryData_path(self):
-        return os.path.join(self.top_directory, self.mapping_name, self.MEMORY_DATA_FILE)
+        return os.path.join(self.top_directory, self.mapping_name, self.flag_name + self.MEMORY_DATA_FILE)
     
     @property
     def data_path(self):
@@ -1327,8 +1515,10 @@ class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
         if os.path.exists(self.MemoryData_path):
             os.remove(self.MemoryData_path)
 
-    def save(self):
-        self.__class__.save_memory_func(self.MemoryData_path, self.save_preprecess())
+    def save(self, force = False):
+        if self.MemoryData_modified or force:
+            self.__class__.save_memory_func(self.MemoryData_path, self.save_preprecess())
+            self._reset_MemoryData_modified()
 
     def load(self):
         if os.path.exists(self.MemoryData_path):
@@ -1341,9 +1531,9 @@ class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
             else:
                 self.rebuild()
             self.save()
-        if DEBUG:
-            print(self)
-            print(self.MemoryData)
+        # if DEBUG:
+        #     print(self)
+        #     print(self.MemoryData)
 
     @abstractmethod
     def merge_MemoryData(self, MemoryData:dict):
@@ -1403,13 +1593,15 @@ class DataMapping(IOStatusManager, ABC, Generic[_VT, DMT, VDMT]):
 
     def values(self) -> Generator[VDMT, Any, None]:
         def value_generator():
-            for i in self.keys():
+            keys = sorted(list(self.keys()))
+            for i in keys:
                 yield self.read(i)
         return value_generator()
     
     def items(self):
         def items_generator():
-            for i in self.keys():
+            keys = sorted(list(self.keys()))
+            for i in keys:
                 yield i, self.read(i)
         return items_generator()
 
@@ -1670,7 +1862,7 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
         pass
 
     def _query_fileshandle(self, data_i:int) -> FHT:
-        return self.files_cluster.query_fileshandle(data_i)
+        return self.files_cluster.query_fileshandle(data_i) # type: ignore
 
     def get_file_core_func(self, src_file_handle:FHT, dst_file_handle:FHT, value) -> Callable:
         return None # type: ignore
@@ -1765,6 +1957,8 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
             value = self.preprogress_value(value, **other_paras)
         if self.OPER_ELEM:
             rlt = self.operate_elem(src, dst, value, **other_paras)
+            for fh in self.files_cluster.query_all_fileshandle():
+                fh.set_synced(False)
         else:
             src_handle, dst_handle = self.get_FilesHandle(src = src, dst = dst, value = value, **other_paras)
             rlt = self.io(src_handle, dst_handle, value)
@@ -1819,8 +2013,13 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     ALWAYS_ALLOW_WRITE = False
     ALWAYS_ALLOW_OVERWRITE = False
 
-    #############
-    def init_identity(self, dataset_node:Union[str, "DatasetNode"], name: str, *args, **kwargs):
+    # region FilesCluster override ####
+
+    # region - override new #
+    def __new__(cls, dataset_node:Union[str, "DatasetNode"], name: str = "", *args, flag_name = "", **kwargs):
+        return super().__new__(cls, dataset_node, name, *args, flag_name = flag_name, **kwargs)
+
+    def init_identity(self, dataset_node:Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs):
         if isinstance(dataset_node, str):
             self._unfinished_operation = 0
             self._dataset_node:DSNT = None # type: ignore 
@@ -1834,10 +2033,12 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             self._top_directory = ""
         else:
             raise TypeError(f"dataset_node must be str or DatasetNode, not {type(dataset_node)}")
-        self.mapping_name = name        
-    #############
+        self.mapping_name = name       
+        self.flag_name = flag_name 
+    # endregion - override new #
 
-    def __init__(self, dataset_node: Union[str, "DatasetNode"], name: str, *args, **kwargs) -> None:
+    # region - override methods #
+    def __init__(self, dataset_node: Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs) -> None:
         super().__init__(dataset_node, name)
 
         self._unfinished = self.mark_exist()
@@ -1860,7 +2061,15 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     @top_directory.setter
     def top_directory(self, value):
         return None
+    
+    @property
+    def parent_data_mapping(self):
+        return self.dataset_node
+    # endregion - override methods #
 
+    # endregion FilesCluster override ####
+
+    # region FilesCluster new methods ####
     @property
     def dataset_node(self):
         return self._dataset_node
@@ -1884,21 +2093,20 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     def unregister_from_dataset(self):
         if self.identity_string() in self._dataset_node.clusters_map:
             self._dataset_node.remove_cluster(self)
+    # endregion FilesCluster new methods ####
+    
+    # region fileshandle operation ########
+    def query_all_fileshandle(self):
+        return self.MemoryData.values()
+    
+    def query_fileshandle_from_iterable(self, iterable:Union[Iterable, slice]) -> Generator[FHT, Any, None]:
+        if isinstance(iterable, slice):
+            iterable = range(iterable.start, iterable.stop, iterable.step)
+        for i in iterable:
+            yield self.query_fileshandle(i)
 
-    ####### fileshandle operation ########
-    def query_fileshandle(self, data_i:int, stop = None, step = None) -> Union[Generator[FHT, Any, None], FHT]:
-        if isinstance(stop, (int, str)):
-            stop = len(self) if stop == "end" else stop
-            step = 1 if step is None else step
-            assert isinstance(stop, int), f"stop must be int, not {type(stop)}"
-            assert isinstance(step, int), f"step must be int, not {type(step)}"
-            # return a generator
-            def g():
-                for i in range(data_i, stop, step):
-                    yield self.MemoryData[i]
-            return g()
-        else:
-            return self.MemoryData[data_i]
+    def query_fileshandle(self, data_i:int) -> FHT:
+        return self.MemoryData[data_i]
     
     @abstractmethod
     def create_fileshandle(self, src, dst, value, **other_paras) -> FHT:
@@ -1913,6 +2121,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     def _set_fileshandle(self, data_i, fileshandle:FHT):
         # if self.closed:
         #     raise ClusterDataIOError("can not set fileshandle when cluster is closed")
+        assert isinstance(fileshandle, self.FILESHANDLE_TYPE), f"fileshandle must be {self.FILESHANDLE_TYPE}, not {type(fileshandle)}"
         if fileshandle not in self.MemoryData._reverse_dict:
             self.MemoryData[data_i] = fileshandle
             return True
@@ -1923,9 +2132,11 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         #     raise ClusterDataIOError("can not set fileshandle when cluster is closed")
         if self.has_data(data_i):
             return self.MemoryData.pop(data_i)
-    ##################
+    # endregion fileshandle operation ########
 
-    #### io metas #####
+    # region io #####
+    
+    # region - io metas #
     def init_io_metas(self):
         self.read_meta:IOMeta[FCT, VDMT, FHT]            = self._read(self)
         self.write_meta:IOMeta[FCT, VDMT, FHT]           = self._write(self)
@@ -1935,6 +2146,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         self.change_dir_meta:IOMeta[FCT, VDMT, FHT]      = self._change_dir(self)
 
     def cvt_key(self, key):
+        if self.KEY_TYPE == int:
+            if isinstance(key, (np.intc, np.integer)): # type: ignore
+                key = int(key)
         return key
 
     def io_decorator(self, io_meta:IOMeta, force = False):
@@ -1960,16 +2174,20 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                     return None
                 if src is not None and not io_meta.check_src(src):
                     io_error = True
+                    warning_info = "src is invalid"
                 elif dst is not None and not io_meta.check_dst(dst):
                     io_error = True
+                    warning_info = "dst is invalid"
                 elif value is not None and not io_meta.check_value(value):
                     io_error = True
+                    warning_info = "value is invalid"
                 if io_meta.is_overwriting(dst):
                     if not self.overwrite_allowed and not force:
                         warnings.warn(f"{self.__class__.__name__}:{self.mapping_name} " + \
                                     "is not allowed to overwitre, any write operation will not be executed.",
                                     ClusterIONotExecutedWarning)
                         io_error = True
+                        warning_info = "overwriting is not allowed"
                         return None
                     overwrited = True 
 
@@ -1984,13 +2202,14 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                             pass
                         else:
                             io_error = True     
+                            warning_info = "ClusterDataIOError was raised during running func:" + str(e)
                     else:
                         if not is_read:
-                            self.set_changed() # Marks the cluster as updated after writing operations.
+                            self._set_MemoryData_modified() # Marks the cluster as updated after writing operations.
                             if overwrited and log_type == self.LOG_ADD:
                                 log_type = self.LOG_CHANGE
                             self.log_to_mark_file(log_type, src, dst, value)
-                            if self.dataset_node is not None:
+                            if self.dataset_node is not None and self._IS_ELEM:
                                 self.dataset_node.update_overview(log_type, src, dst, value, self)
                 
                 if io_error:
@@ -2009,7 +2228,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
     class _read(IOMeta[_FCT, _VDMT, _FHT]):
         def get_FilesHandle(self, src, dst, value, **other_paras):
-            if self.files_cluster.has(src):
+            if self.files_cluster.has_data(src):
                 return self._query_fileshandle(src), None
             else:
                 raise ClusterDataIOError
@@ -2019,7 +2238,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
         def io_cache(self, src_file_handle:FilesHandle, dst_file_handle, value=None) -> Any:
             if src_file_handle.has_cache:
-                return src_file_handle.cache_proxy
+                return src_file_handle.cache
             else:
                 raise IOMetaPriorityError
 
@@ -2040,7 +2259,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         LOG_TYPE = IOStatusManager.LOG_ADD
 
         def get_FilesHandle(self, src, dst, value,  **other_paras):
-            if not self.files_cluster.has(dst):
+            if not self.files_cluster.has_data(dst):
                 fh:FilesHandle = self.files_cluster.create_fileshandle(src, dst, value, **other_paras)
                 self.files_cluster._set_fileshandle(dst, fh)
             return None, self._query_fileshandle(dst)
@@ -2076,9 +2295,8 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
         def get_FilesHandle(self, src, dst, value, **other_paras):
             src_handle:FilesHandle = self.files_cluster._pop_fileshandle(src) # type: ignore
-            if not self.files_cluster.has(dst):
-
-                dst_handle = self.files_cluster.FILESHANDLE_TYPE._ignore_create_same_path_fh_warning_once().\
+            if not self.files_cluster.has_data(dst):
+                dst_handle = self.files_cluster.FILESHANDLE_TYPE.create_temp().\
                     from_fileshandle(self.files_cluster, src_handle, 
                         corename= self.files_cluster.format_corename(dst))
                 self.files_cluster._set_fileshandle(dst, dst_handle)
@@ -2106,7 +2324,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             self.core_func = os.remove
 
         def get_FilesHandle(self, src, dst, value, **other_paras):
-            if not self.files_cluster.has(dst):
+            if not self.files_cluster.has_data(dst):
                 fh = self.files_cluster.FILESHANDLE_TYPE.create_not_exist_fileshandle(self.files_cluster)
             else:
                 fh = self.files_cluster._pop_fileshandle(dst)
@@ -2134,7 +2352,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
         def get_FilesHandle(self, src, dst, value, **other_paras):
             src_handle:FilesHandle = value
-            if not self.files_cluster.has(dst):
+            if not self.files_cluster.has_data(dst):
                 dst_handle = self.files_cluster.FILESHANDLE_TYPE.from_fileshandle(self.files_cluster, src_handle, 
                                                                                   corename= self.files_cluster.format_corename(dst),
                                                                                   cache = FilesHandle.KW_INIT_WITHOUT_CACHE)
@@ -2185,8 +2403,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         
         def check_value(self, value: str):
             return isinstance(value, str)
+    # endregion io metas #####
 
-    ### common operation ###
+    # region - common operation #
     @property
     def continuous(self):
         return self.num == self.i_upper
@@ -2287,10 +2506,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         self.cache_priority = True
         self.clear(force = force, clear_both=False)
         self.cache_priority = orig_cache_priority
-    ### common operation ###
+    # endregion common operation ###
 
-    ### data operation ###
-
+    # region - data operation #
     def read_data(self, src:int, *, force = False, **other_paras) -> VDMT:
         return self.io_decorator(self.read_meta, force)(src = src, **other_paras) # type: ignore
 
@@ -2352,17 +2570,16 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             with self.remove_meta._set_ctrl_flag(write_synchronous=True):
                 super().clear(force = force)
         else:
-            super().clear(force)
-            for fh in self.query_fileshandle(0, 'end'):
+            super().clear(force = force)
+            for fh in self.query_all_fileshandle():
                 fh:FHT
                 fh.set_synced(False)
     
     def data_keys(self):
         return self.MemoryData.keys()
-    ### data operation ###
+    # endregion data operation ###
     
-    ### elem operation ###
-
+    # region - elem operation #
     def read_elem(self, src:int, *, force = False, **other_paras):
         raise NotImplementedError
         
@@ -2398,9 +2615,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
     def elem_keys(self):
         raise NotImplementedError
-    ### elem operation ###
+    # endregion - elem operation ###
 
-    ### general ###    
+    # region - general #    
     def _switch_io_operation(self, io_data_func, io_elem_func):
         if self._ELEM_BY_CACHE:
             return io_elem_func
@@ -2447,7 +2664,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     
     def keys(self):
         return self._switch_io_operation(self.data_keys, self.elem_keys)()
-    ###
+    
     def idx_unwrited(self, idx):
         if self._ELEM_BY_CACHE:
             return not self.has_elem(idx)
@@ -2456,9 +2673,11 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                 return self.query_fileshandle(idx).empty
             else:
                 return True
-    #### io metas END#####
+    # endregion - general ###
+    
+    # endregion io #####
 
-    #### Memorydata operation ####
+    # region Memorydata operation ####
     def matching_path(self):
         paths:list[str] = []
         paths.extend(glob.glob(os.path.join(self.data_path, "**/*"), recursive=True))
@@ -2466,7 +2685,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
     def rebuild(self):
         paths:list[str] = self.matching_path()
-
+        
         for path in paths:
             fh = self.FILESHANDLE_TYPE.from_path(self, path)
             data_i = self.deformat_corename(fh.corename)
@@ -2494,112 +2713,113 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                 # add
                 self._set_fileshandle(self.data_i_upper, loaded_fh)
 
-    def save_preprecess(self, MemoryData:BinDict = None ):
+    def save_preprecess(self, MemoryData:BinDict[int, FHT] = None ):
         MemoryData = self.MemoryData if MemoryData is None else MemoryData
         to_save_dict = {item[0]: item[1].as_dict() for item in MemoryData.items()}
         return to_save_dict
     
     def load_postprocess(self, data:dict):
-        new_dict = {int(k): self.FILESHANDLE_TYPE.from_dict(self, v) for k, v in data.items()}
+        new_dict = {int(k): None for k in data.keys()}
+        for k, v in tqdm(data.items(), desc=f"loading {self}", total=len(new_dict), leave=False):
+            new_dict[int(k)] = self.FILESHANDLE_TYPE.from_dict(self, v)
         data_info_map = self.MEMORY_DATA_TYPE(new_dict)
         return data_info_map
-    ###############
+    # endregion
 
+    # region create instance ####
     @classmethod
     def from_cluster(cls:type[FCT], cluster:FCT, dataset_node:DSNT = None, name = None, *args, **kwargs) -> FCT:
         dataset_node    = cluster.dataset_node if dataset_node is None else dataset_node
         name            = cluster.mapping_name if name is None else name
         new_cluster:FCT = cls(dataset_node, name)
         return new_cluster
+    # endregion create instance ####
 
 class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DSNT, VDST]):
     MEMORY_DATA_TYPE = Table[int, str, bool]
-
+    MEMORY_DATA_FILE = ".overview"
     load_memory_func = JsonIO.load_json
     save_memory_func = JsonIO.dump_json 
     
-    def init_identity(self, top_directory:str, name: str, *args, parent:"DatasetNode" = None, **kwargs):
-        self.init_node_hook(parent)
+    # region FilesCluster override ####
+    
+    # region - override new #
+    def init_identity(self, top_directory:str, *args, parent:"DatasetNode" = None, flag_name = "", **kwargs):
+        def is_subpath(child_path, parent_path):
+            relative_path:str = os.path.relpath(child_path, parent_path)
+            return not relative_path.startswith('..')
+
         self._unfinished_operation = 0
-        if self.parent is not None:
+        if parent is not None:
             self._top_directory = os.path.join(parent.data_path, top_directory)
+            assert is_subpath(self.top_directory, parent.top_directory), f"{self.top_directory} is not inside {parent.top_directory}"
         else:
             self._top_directory = top_directory
-        self.mapping_name = name  
 
-    def __init__(self, directory, *, parent:"DatasetNode" = None) -> None:
+        self.mapping_name:str = "" # self.top_directory
+        self.flag_name = flag_name
+    # endregion - override new #
+
+    # region - override methods #
+    def __init__(self, directory, *, flag_name = "", parent:"DatasetNode" = None) -> None:
         if parent is not None:
-            super().__init__(os.path.join(parent.data_path, directory), "")
+            super().__init__(os.path.join(parent.data_path, directory), "", flag_name=flag_name)
         else:
             super().__init__(directory, "")
-        
-        self.init_dataset_attr()
+        self.init_node_hook()
+        self.move_node(parent)
+        self.init_dataset_attr_hook()
 
         self.clusters_map:dict[str, FCT] = dict()
         self.init_clusters_hook()
-
-        self.__inited = True # if the dataset has been inited
 
     @property
     def MemoryData(self) -> Table[int, str, bool]:
         return self._MemoryData
 
-    def init_node_hook(self, parent):
-        self.parent:DatasetNode = parent
+    @property
+    def parent_data_mapping(self):
+        return self.parent
+
+    def init_node_hook(self):
+        self.__parent:list[DatasetNode] = [None]
         self.children:list[DatasetNode] = []
-        self.move_node(parent)
 
         self.linked_with_children = True
         self.follow_parent = True
 
-    def init_dataset_attr(self):
-        def is_directory_inside(base_dir, target_dir):
-            base_dir:str = os.path.abspath(base_dir)
-            target_dir:str = os.path.abspath(target_dir)
-            return target_dir.startswith(base_dir)
+    def init_dataset_attr_hook(self):
         
         os.makedirs(self.top_directory, exist_ok=True) 
         self._unfinished_operation = 0
-        if self.parent is not None:
-            assert is_directory_inside(self.parent.top_directory, self.top_directory), f"{self.top_directory} is not inside {self.parent.top_directory}"
-            self.name:str = os.path.relpath(self.top_directory, self.parent.top_directory)
-        else:
-            self.name:str = self.top_directory
+    # endregion - override methods #
 
-    #### cluster_map     ####
+    # endregion FilesCluster override ####
+
+    # region cluster_map ####
     def add_cluster(self, cluster:FCT):
         cluster._dataset_node = self
-        if cluster.mapping_name in self.clusters_map:
-            raise KeyError(f"{cluster.mapping_name} already exists")
+        if cluster.identity_name() in self.clusters_map:
+            raise KeyError(f"{cluster.identity_name()} already exists")
         else:
-            self.clusters_map[cluster.mapping_name] = cluster
+            self.clusters_map[cluster.identity_name()] = cluster
         if self.opened:
             cluster.open()
             self.MemoryData.col_names
         if cluster._IS_ELEM:
-            self.MemoryData.add_column(cluster.mapping_name, exist_ok=True)
+            self.MemoryData.add_column(cluster.identity_name(), exist_ok=True)
 
     def remove_cluster(self, cluster:FCT):
         if cluster.dataset_node == self:
             cluster.dataset_node = None
-            del self.clusters_map[cluster.mapping_name]
-            self.MemoryData.remove_column(cluster.mapping_name, not_exist_ok=True)
+            del self.clusters_map[cluster.identity_name()]
+            self.MemoryData.remove_column(cluster.identity_name(), not_exist_ok=True)
 
     def get_cluster(self, name:str):
         return self.clusters_map[name]
 
     def cluster_keys(self):
         return self.clusters_map.keys()
-
-    @property
-    def children_names(self):
-        return [x.name for x in self.children]
-
-    def get_child(self, name):
-        for child in self.children:
-            if child.name == name:
-                return child
-        raise KeyError(f"{name} not in {self}")
 
     @property
     def clusters(self) -> list[FCT]:
@@ -2646,7 +2866,9 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             cluster_map.update(child.get_all_clusters(_type, only_opened))
 
         return cluster_map
-    #### cluster_map END ####
+    # endregion cluster_map END ####
+
+    # region node and cluster operation #
     def operate_clusters(self, func:Union[Callable, str], *args, **kwargs):
         for obj in self.clusters:
             self.operate_one_cluster(obj, func, *args, **kwargs)
@@ -2703,9 +2925,9 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         super().set_overwrite_forbidden_hook()
         self.operate_clusters(FilesCluster.set_overwrite_forbidden)
         self.operate_children_node(DatasetNode.set_overwrite_forbidden)
-    ####################
+    # endregion node and cluster operation #
 
-    ##### clusters #####
+    # region clusters #####
     def init_clusters_hook(self):
         pass
         # unfinished = self.mark_exist()
@@ -2722,31 +2944,55 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         #     os.remove(self.get_writing_mark_file())
 
     def __setattr__(self, name, value):
+        ### 赋值DataMapping对象时，自动注册
         ### 同名变量赋值时，自动将原有对象解除注册
-        if name in self.__dict__:
-            obj = self.__getattribute__(name)
-            if isinstance(obj, DatasetNode):
-                if value is not None:
-                    assert isinstance(value, DatasetNode), f"the type of {name} must be DatasetNode, not {type(value)}"
-                if obj.parent == self:
-                    obj.move_node(None)
-            elif isinstance(obj, FilesCluster):
-                assert isinstance(value, FilesCluster), f"the type of {name} must be FilesCluster, not {type(value)}"
-                if obj.dataset_node == self:
-                    obj.unregister_from_dataset()
+        if isinstance(value, (FilesCluster, DatasetNode)):
+            if not hasattr(self, name):
+                pass
+            else:
+                obj = self.__getattribute__(name)
+                if id(value) != id(obj):
+                    if isinstance(obj, DatasetNode) and obj.parent == self:
+                        self.remove_child(obj)
+                    elif isinstance(obj, FilesCluster) and obj.dataset_node == self:
+                        self.remove_cluster(obj)
+            # auto register     
+            if isinstance(value, DatasetNode):
+                self.add_child(value)
+            elif isinstance(value, FilesCluster):
+                self.add_cluster(value)
         super().__setattr__(name, value)
-    ####################
+    # endregion clusters #
 
-    ### node ###
+    # region node ###
+    @property
+    def children_names(self):
+        return [x.identity_name() for x in self.children]
+
+    @property
+    def parent(self):
+        return self.__parent[0]
+
+    def _set_parent(self, parent):
+        self.__parent[0] = parent
+
+    def get_child(self, name):
+        for child in self.children:
+            if child.identity_name() == name:
+                return child
+        raise KeyError(f"{name} not in {self}")
+
     def add_child(self, child_node:"DatasetNode"):
         assert isinstance(child_node, DatasetNode), f"child_node must be Node, not {type(child_node)}"
-        child_node.parent = self
+        if child_node in self.children:
+            return
+        child_node._set_parent(self)
         self.children.append(child_node)
 
     def remove_child(self, child_node:"DatasetNode"):
         assert isinstance(child_node, DatasetNode), f"child_node must be Node, not {type(child_node)}"
         if child_node in self.children:
-            child_node.parent = None
+            child_node._set_parent(None)
             self.children.remove(child_node)
 
     def move_node(self, new_parent:"DatasetNode"):
@@ -2755,24 +3001,24 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             self.parent.remove_child(self)
         if new_parent is not None:
             new_parent.add_child(self)
-    ############
+    # endregion node ###
 
-    ############
-    def raw_read(self, src, *, force = False, **other_paras) -> VDST:
-        read_rlt = []
+    # region io ###
+    def raw_read(self, src, *, force = False, **other_paras) -> dict[str, Any]:
+        read_rlt = {}
         with self.get_writer(force).allow_overwriting():
             for obj in self.elem_clusters:
                 rlt = obj.read(src, **other_paras)
-                read_rlt.append(rlt)
+                read_rlt[obj.identity_name()] = rlt
         return read_rlt
     
-    def raw_write(self, dst, values:list, *, force = False, **other_paras) -> None:
+    def raw_write(self, dst, values:dict[str, Any], *, force = False, **other_paras) -> None:
         assert len(values) == len(self.elem_clusters)
         with self.get_writer(force).allow_overwriting():
-            for i, obj in enumerate(self.elem_clusters):
-                obj.write(dst, values[i], **other_paras)
+            for obj in self.elem_clusters:
+                obj.write(dst, values[obj.identity_name()], **other_paras)
 
-    def read(self, src:int):
+    def read(self, src:int) -> VDST:
         return self.raw_read(src)
 
     def write(self, dst:int, value:VDST, *, force = False, **other_paras) -> None:
@@ -2805,7 +3051,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
                 src_cluster = src_dataset_node.clusters_map[cluster_name]
                 self.operate_one_cluster(this_cluster, FilesCluster.merge_from, src_cluster)
             for this_child_node in self.children:
-                src_child_node = src_dataset_node.get_child(this_child_node.name)
+                src_child_node = src_dataset_node.get_child(this_child_node.identity_name())
                 self.operate_one_child_node(this_child_node, DatasetNode.merge_from, src_child_node)
 
     def copy_from(self, src_dataset_node:DSNT, *, cover = False, force = False) -> None:
@@ -2825,9 +3071,9 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             with self.get_writer(force).allow_overwriting():
                 self.operate_clusters(DataMapping.clear, clear_both = clear_both)
                 self.operate_children_node(DataMapping.clear, clear_both = clear_both)
-    ############
+    # endregion io ###
 
-    ###### cache operation ######
+    # region cache operation ######
     def all_cache_to_file(self, *, force = False):
         self.operate_clusters(FilesCluster.cache_to_file, force=force)
         self.operate_children_node(DatasetNode.all_cache_to_file, force=force)
@@ -2835,11 +3081,11 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     def all_file_to_cache(self, *, force = False):
         self.operate_clusters(FilesCluster.file_to_cache, force=force)
         self.operate_children_node(DatasetNode.all_file_to_cache, force=force)
-    ############
+    # endregion cache operation ######
 
-    ############
+    # region Memorydata operation ####
     def update_overview(self, log_type, src, dst, value, cluster:FilesCluster):
-        col_name = cluster.mapping_name
+        col_name = cluster.identity_name()
         if log_type == self.LOG_READ or\
         log_type == self.LOG_CHANGE or\
         log_type == self.LOG_OPERATION:
@@ -2848,8 +3094,9 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             self.MemoryData.add_row(dst, exist_ok=True)
             self.MemoryData[dst, col_name] = True
         if log_type == self.LOG_REMOVE:
-            self.MemoryData[dst, col_name] = False
-            self.clear_empty_row(dst)
+            if dst in self.MemoryData:
+                self.MemoryData[dst, col_name] = False
+                self.clear_empty_row(dst)
         if log_type == self.LOG_MOVE:
             self.MemoryData.add_row(dst, exist_ok=True)
             self.MemoryData[dst, col_name] = True
@@ -2859,9 +3106,10 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     def rebuild(self):
         if len(self.elem_clusters) > 0:
             rows = [x for x in range(self.i_upper)]
-            cols = [x.mapping_name for x in self.elem_clusters]
-            self._MemoryData = Table(rows, cols, bool, row_name_type=int, col_name_type=str)
-            for data_i in tqdm(self.MemoryData.data, desc="initializing data frame"):
+            cols = [x.identity_name() for x in self.elem_clusters]
+            self._MemoryData = Table(rows, cols, bool, row_name_type=int, col_name_type=str) # type: ignore
+            i_upper = max([x.i_upper for x in self.elem_clusters])
+            for data_i in tqdm(range(i_upper), desc="initializing data frame"):
                 self.calc_overview(data_i)
 
     def merge_MemoryData(self, MemoryData:Table[int, str, bool]):
@@ -2882,12 +3130,22 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     def calc_overview(self, data_i):
         self.MemoryData.add_row(data_i, exist_ok=True)        
         for cluster in self.elem_clusters:
-            self.MemoryData[data_i, cluster.mapping_name] = cluster.has(data_i)
+            self.MemoryData[data_i, cluster.identity_name()] = cluster.has(data_i)
 
-    def clear_empty_row(self, data_i):
+    def clear_empty_row(self, data_i:int):
         if not any(self.MemoryData[data_i].values()):
             self.MemoryData.remove_row(data_i)
-    ############
+            
+    def rebuild_all(self):
+        self.rebuild()
+        self.operate_clusters(FilesCluster.rebuild)
+        self.operate_children_node(DatasetNode.rebuild_all)
+
+    def save_all(self, force = False):
+        self.save(force=force)
+        self.operate_clusters(FilesCluster.save, force=force)
+        self.operate_children_node(DatasetNode.save_all, force=force)
+    # endregion Memorydata operation ####
 
 def parse_kw(**kwargs) -> list[dict[str, Any]]:
     if len(kwargs) == 0:
@@ -2903,3 +3161,5 @@ def parse_kw(**kwargs) -> list[dict[str, Any]]:
         kws.append({k:v[data_i] for k, v in zip(kw_keys, kw_values)})
 
     return kws
+
+
