@@ -46,6 +46,7 @@ DLC = TypeVar('DLC', bound="DictLikeCluster") # type of the dict-like cluster
 UFH = TypeVar('UFH', bound="UnifiedFilesHandle") # type of the unified files handle
 DFH = TypeVar('DFH', bound="DisunifiedFilesHandle") # type of the disunified files handle
 DLFH = TypeVar('DLFH', bound="DictLikeHandle") # type of the dict-like files handle
+VDLT = TypeVar('VDLT', bound=dict[int, Any]) # type of the value of data cluster
 VDMT = TypeVar('VDMT') # type of the value of data cluster
 IADC = TypeVar('IADC', bound="IntArrayDictCluster") # type of the input argument data cluster
 DF = TypeVar('DF', bound="DictFile") # type of the data format
@@ -435,7 +436,7 @@ class DictLikeHandle(DisunifiedFilesHandle[DLC, dict[int, Any]], Generic[DLC]):
     def has_cache(self):
         return len(self.cache) > 0
 
-class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDMT], Generic[DLFH, DLC, DSNT, VDMT]):
+class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDLT], Generic[DLFH, DLC, DSNT, VDLT]):
     _IS_ELEM = True
     _ELEM_BY_CACHE = True
     FILESHANDLE_TYPE:type[FilesHandle] = DictLikeHandle

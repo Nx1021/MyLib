@@ -79,7 +79,7 @@ class ClusterNotRecommendWarning(ClusterWarning):
 
 # region functions ###
 def method_exit_hook_decorator(cls, func:Callable, exit_hook_func, enter_condition_func = None):
-    enter_condition_func = (lambda : True) if enter_condition_func is None else enter_condition_func
+    enter_condition_func = (lambda x : True) if enter_condition_func is None else enter_condition_func
     def wrapper(self, *args, **kw):
         if enter_condition_func(self):
             func(self, *args, **kw)
@@ -106,6 +106,10 @@ def parse_kw(**kwargs) -> list[dict[str, Any]]:
         kws.append({k:v[data_i] for k, v in zip(kw_keys, kw_values)})
 
     return kws
+
+def is_subpath(child_path, parent_path):
+    relative_path:str = os.path.relpath(child_path, parent_path)
+    return not relative_path.startswith('..')
 # endregion functions ###
 
 class IOStatusManager():
@@ -754,7 +758,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             suffix = '.' + suffix
     
         data_path = self.cluster.data_path if data_path == "" else data_path
-        assert data_path in cluster.data_path, f"data_path must be in {cluster.data_path}"
+        if ".." in data_path:
+            data_path = os.path.normpath(data_path)
+        assert is_subpath(data_path, self.cluster.data_path), f"data_path must be in {self.cluster.data_path}"
 
         self.data_path = data_path
         self.sub_dir = sub_dir
@@ -969,7 +975,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                   _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None): #type: ignore
         datapath = cluster.data_path
         if isinstance(path, str):
-            assert datapath in path, "cannot create a fileshandle object which is not in the data_path"
+            assert is_subpath(datapath, path), "cannot create a fileshandle object which is not in the data_path"
             filename = os.path.relpath(path, datapath)
         else:
             assert len(path) > 0, f"path must be a str or a list of str"
@@ -2731,9 +2737,6 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     
     # region - override new #
     def init_identity(self, top_directory:str, *args, parent:"DatasetNode" = None, flag_name = "", **kwargs):
-        def is_subpath(child_path, parent_path):
-            relative_path:str = os.path.relpath(child_path, parent_path)
-            return not relative_path.startswith('..')
 
         self._unfinished_operation = 0
         if parent is not None:
