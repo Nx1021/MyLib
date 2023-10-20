@@ -10,6 +10,7 @@ import io
 import re
 import pickle
 import warnings
+import cv2
 
 from typing import Generic, TypeVar, Union, Callable, Iterable, Type
 import types
@@ -82,6 +83,48 @@ def deserialize_object(serialized_file_path):
     with open(serialized_file_path, 'rb') as file:
         elements = pickle.load(file)
         return elements
+
+def is_image(array):
+    if not isinstance(array, np.ndarray):
+        return False
+    if array.ndim not in [2, 3]:
+        return False
+    if array.dtype not in [np.uint8, np.uint16, np.float32, np.float64]:
+        return False
+    return True
+
+def serialize_image_container(image_container):
+    def serialize_image(image:np.ndarray):  
+        # 将NumPy数组编码为png格式的图像
+        retval, buffer = cv2.imencode('.png', image)
+        # 将图像数据转换为字节字符串
+        image_bytes = buffer.tobytes()
+        image.tobytes()
+        return image_bytes
+    if is_image(image_container):
+        return serialize_image(image_container)
+    elif isinstance(image_container, (list, tuple)):
+        new_value = [serialize_image_container(item) for item in image_container]
+    elif isinstance(image_container, dict):
+        new_value = dict(zip(image_container.keys(), [serialize_image(x) for x in image_container.values()]))
+    else:
+        return image_container
+    return new_value
+
+def deserialize_image_container(bytes_container, imread_flags):
+    def deserialize_image(image_bytes):  
+        image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+        image = cv2.imdecode(image_array, flags=imread_flags)# 将numpy数组解码为图像
+        return image
+    if isinstance(bytes_container, bytes):
+        return deserialize_image(bytes_container)
+    elif isinstance(bytes_container, (list, tuple)):
+        new_value = [deserialize_image(item) for item in bytes_container]
+    elif isinstance(bytes_container, dict):
+        new_value = dict(zip(bytes_container.keys(), [deserialize_image(x) for x in bytes_container.values()]))
+    else:
+        return bytes_container
+    return new_value
 
 def test_pickleable(obj):
     temp_path = "./__pickle_test__.temp"

@@ -2732,7 +2732,7 @@ class PostureDatasetFormat(DatasetFormat[_DataCluster, ViewMeta]):
                         depth_scale=None,
                         bbox_3d = bbox_3d_dict, 
                         landmarks = landmarks_dict,
-                        visib_fract=None,
+                        visib_fracts=None,
                         labels=labels_dict)
 
     def _write_elements(self, data_i: int, viewmeta: ViewMeta, subdir="", appname=""):
@@ -2853,7 +2853,7 @@ class LinemodFormat(PostureDatasetFormat):
         for obj_id in viewmeta.masks.keys():
             mask = viewmeta.masks[obj_id]
             bb = bbox_2d[obj_id]
-            vf = viewmeta.visib_fract[obj_id]
+            vf = viewmeta.visib_fracts[obj_id]
             mask_count = int(np.sum(mask))
             mask_visib_count = int(mask_count * vf)
             gt_info_one_info.append({
@@ -2880,8 +2880,8 @@ class LinemodFormat(PostureDatasetFormat):
         postures = [Posture(rmat =x[LinemodFormat.KW_GT_R], tvec=x[LinemodFormat.KW_GT_t]) for x in self.scene_gt_dict[data_i]]
         extr_vecs = [np.array([x.rvec, x.tvec]) for x in postures]
         extr_vecs_dict = as_dict(ids, extr_vecs)
-        # visib_fract    = [x[LinemodFormat.KW_GT_INFO_VISIB_FRACT] for x in self.scene_gt_info_dict[data_i]]
-        visib_fract_dict = zip_dict(ids, self.scene_gt_info_dict[data_i], 
+        # visib_fracts    = [x[LinemodFormat.KW_GT_INFO_VISIB_FRACT] for x in self.scene_gt_info_dict[data_i]]
+        visib_fracts_dict = zip_dict(ids, self.scene_gt_info_dict[data_i], 
                                          lambda obj: [x[LinemodFormat.KW_GT_INFO_VISIB_FRACT] for x in obj])
         return ViewMeta(color, depth, masks, 
                         extr_vecs_dict,
@@ -2889,7 +2889,7 @@ class LinemodFormat(PostureDatasetFormat):
                         depth_scale,
                         bbox_3d,
                         landmarks,
-                        visib_fract_dict)
+                        visib_fracts_dict)
 
 class VocFormat(PostureDatasetFormat):
     IMGAE_DIR = "images"
@@ -2992,7 +2992,7 @@ class VocFormat(PostureDatasetFormat):
                                             read_func=lambda path: float(loadtxt_func((1,))(path)), 
                                             write_func=savetxt_func("%8.8f"), 
                                             suffix = ".txt")
-        self.visib_fract_elements= IntArrayDictElement(self, "visib_fracts", ())
+        self.visib_fracts_elements= IntArrayDictElement(self, "visib_fracts", ())
         self.labels_elements     = self.cxcywhLabelElement(self, "labels", )
 
         self.labels_elements.default_image_size = (640, 480)
@@ -3096,7 +3096,7 @@ class VocFormat(PostureDatasetFormat):
 
         self.intr_elements.write(data_i, viewmeta.intr, subdir=sub_set)
         self.depth_scale_elements.write(data_i, np.array([viewmeta.depth_scale]), subdir=sub_set)
-        self.visib_fract_elements.write(data_i, viewmeta.visib_fract, subdir=sub_set)
+        self.visib_fracts_elements.write(data_i, viewmeta.visib_fracts, subdir=sub_set)
     
     def read_one(self, data_i, **kwargs) -> ViewMeta:
         # 判断data_i属于train或者val
@@ -3121,8 +3121,8 @@ class VocFormat(PostureDatasetFormat):
         ds    = self.depth_scale_elements.read(data_i)
         viewmeta.set_element(ViewMeta.DEPTH_SCALE, ds)
         #
-        visib_fract_dict = self.visib_fract_elements.read(data_i)
-        viewmeta.set_element(ViewMeta.VISIB_FRACT, visib_fract_dict)
+        visib_fracts_dict = self.visib_fracts_elements.read(data_i)
+        viewmeta.set_element(ViewMeta.VISIB_FRACTS, visib_fracts_dict)
 
         return viewmeta
 
@@ -3137,7 +3137,7 @@ class VocFormat(PostureDatasetFormat):
                   self.intr_elements, 
                   self.landmarks_elements, 
                   self.extr_vecs_elements,
-                  self.visib_fract_elements]:
+                  self.visib_fracts_elements]:
             c:Elements = c
             c.cache_to_data_info_map(True)
 

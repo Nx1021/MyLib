@@ -2,7 +2,7 @@ import os
 import numpy as np
 from .aruco_detector import ArucoDetector
 from .capturing import Capturing, RsCamera
-from .data_manager import DataRecorder, ModelManager
+from .data_manager import DataRecorder, ModelManager, FrameMeta
 from .interact_icp import InteractIcp
 from .pcd_creator import PcdCreator
 from . import ARUCO_FLOOR, FRAMETYPE_DATA, MeshManager, ViewMeta, Posture, MeshMeta, CameraIntr, cvt_by_intr
@@ -74,6 +74,7 @@ class PipeLine():
         elif isinstance(mesh_manager, dict):
             mmd = mesh_manager
         for framemeta in self.data_recorder:
+            framemeta:FrameMeta
             color = framemeta.color
             depth = framemeta.depth
             intr_M = framemeta.intr_M["intr_M"]

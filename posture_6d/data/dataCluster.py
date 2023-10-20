@@ -28,10 +28,6 @@ from functools import partial
 # from posture_6d.data.IOAbstract import DatasetNode
 
 
-from . import Posture, JsonIO, JSONDecodeError, Table, extract_doc, search_in_dict, int_str_cocvt, \
-    serialize_object, deserialize_object, read_file_as_str, write_str_to_file
-from .viewmeta import ViewMeta, serialize_image_container, deserialize_image_container
-from .mesh_manager import MeshMeta
 from .IOAbstract import DataMapping, DatasetNode, IOMeta, BinDict, _KT, _VT, DMT, VDMT, DSNT,\
     FilesHandle, CacheProxy, \
     AmbiguousError, IOMetaParameterError, KeyNotFoundError, ClusterDataIOError, DataMapExistError, \
@@ -48,7 +44,11 @@ DFH = TypeVar('DFH', bound="DisunifiedFilesHandle") # type of the disunified fil
 DLFH = TypeVar('DLFH', bound="DictLikeHandle") # type of the dict-like files handle
 VDLT = TypeVar('VDLT', bound=dict[int, Any]) # type of the value of data cluster
 VDMT = TypeVar('VDMT') # type of the value of data cluster
-IADC = TypeVar('IADC', bound="IntArrayDictCluster") # type of the input argument data cluster
+
+NDAC = TypeVar('NDAC', bound="NdarrayAsTxtCluster") # type of the number dict cluster
+VNDAC = TypeVar('VNDAC', bound=np.ndarray) # type of the value of number dict cluster
+INDADC = TypeVar('INDADC', bound="IntArrayDictAsTxtCluster") # type of the input argument data cluster
+VINDADC = TypeVar('VINDADC', bound=dict[int, np.ndarray]) # type of the value of input argument data cluster
 DF = TypeVar('DF', bound="DictFile") # type of the data format
 
 class UnifiedFilesHandle(FilesHandle[UFC, VDMT], Generic[UFC, VDMT]):
@@ -63,23 +63,49 @@ class UnifiedFilesHandle(FilesHandle[UFC, VDMT], Generic[UFC, VDMT]):
 class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, DSNT, VDMT]):
     _IS_ELEM = True
     FILESHANDLE_TYPE = UnifiedFilesHandle
+
+    DEFAULT_SUFFIX = None
+    DEFAULT_READ_FUNC = None
+    DEFAULT_WRITE_FUNC = None
+    DEFAULT_VALUE_TYPE = None
+
     def __init__(self, dataset_node:DSNT, name: str,
-                 suffix:str = '.txt', *,
+                 suffix:str = None, *,
+                 flag_name = "", 
                  read_func:Callable[[str], VDMT] = None, 
                  write_func:Callable[[str, VDMT], None] = None, 
                  value_type:Callable = None,
                  filllen = 6, 
                  fillchar = '0',
                  alternate_suffix:list = None,
-                 flag_name = "",
+                 read_func_args = None,
+                 read_func_kwargs = None,
+                 write_func_args = None,
+                 write_func_kwargs = None,
                  **kwargs
                  ) -> None:
+        suffix = suffix if suffix is not None else self.DEFAULT_SUFFIX
+        assert suffix is not None, "suffix must be specified"
         self.suffix = suffix
-
+        
         read_func, write_func, value_type = FilesHandle.try_get_default(suffix, read_func, write_func, value_type)
-        self.read_func = read_func
-        self.write_func = write_func
-        self.value_type = value_type
+        self.read_func = read_func if read_func is not None else self.DEFAULT_READ_FUNC
+        self.write_func = write_func if write_func is not None else self.DEFAULT_WRITE_FUNC
+        self.value_type = value_type if value_type is not None else self.DEFAULT_VALUE_TYPE
+
+        read_func_args = tuple() if read_func_args is None else read_func_args
+        read_func_kwargs = dict() if read_func_kwargs is None else read_func_kwargs
+        write_func_args = tuple() if write_func_args is None else write_func_args
+        write_func_kwargs = dict() if write_func_kwargs is None else write_func_kwargs
+        assert isinstance(read_func_args, tuple), "read_func_args must be tuple"
+        assert isinstance(read_func_kwargs, dict), "read_func_kwargs must be dict"
+        assert isinstance(write_func_args, tuple), "write_func_args must be tuple"
+        assert isinstance(write_func_kwargs, dict), "write_func_kwargs must be dict"
+
+        if len(read_func_args) > 0 or len(read_func_kwargs) > 0:
+            self.read_func = partial(self.read_func, *read_func_args, **read_func_kwargs)
+        if len(write_func_args) > 0 or len(write_func_kwargs) > 0:
+            self.write_func = partial(self.write_func, *write_func_args, **write_func_kwargs)
 
         self.filllen = filllen
         self.fillchar = fillchar
@@ -114,6 +140,12 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
     _FCT = TypeVar('_FCT', bound="UnifiedFileCluster")
     _VDMT = TypeVar('_VDMT')
     _FHT = TypeVar('_FHT', bound=UnifiedFilesHandle)
+
+    def update_read_func_binded_paras(self, paras:dict[str, Any]):
+        self.read_meta.core_func_binded_paras.update(paras)
+
+    def update_write_func_binded_paras(self, paras:dict[str, Any]):
+        self.write_meta.core_func_binded_paras.update(paras)
 
     def init_io_metas(self):
         '''
@@ -777,54 +809,81 @@ class DictFile(DisunifiedFileCluster[DFH, DFC, DSNT, dict], Generic[DFH, DFC, DS
     def __iter__(self):
         return self.read(0)
 
-class IntArrayDictCluster(UnifiedFileCluster[UFH, IADC, DSNT, dict[int, np.ndarray]], Generic[UFH, IADC, DSNT]):
-    def __init__(self, dataset_node:DSNT, name: str, array_shape:tuple[int], array_fmt:str = "",
-                 suffix:str = '.txt', *,
+class NdarrayAsTxtCluster(UnifiedFileCluster[UFH, NDAC, DSNT, VNDAC], Generic[UFH, NDAC, DSNT, VNDAC]):
+    
+    DEFAULT_SUFFIX = ".txt"
+    DEFAULT_READ_FUNC = np.loadtxt
+    DEFAULT_WRITE_FUNC = np.savetxt
+    DEFAULT_VALUE_TYPE = np.ndarray
+    
+    def __init__(self, dataset_node:DSNT, name: str,
+                 suffix:str = None, *,
+                 flag_name = "",
                  read_func:Callable[[str], VDMT] = None, 
                  write_func:Callable[[str, VDMT], None] = None, 
                  value_type:Callable = None,
                  filllen = 6, 
                  fillchar = '0',
                  alternate_suffix:list = None, 
+                 read_func_args = None,
+                 read_func_kwargs = None,
+                 write_func_args = None,
+                 write_func_kwargs = None,
+                 array_shape:tuple[int] = None, 
                  **kwargs
                  ) -> None:
-        read_func = partial(np.loadtxt, fmt = array_fmt) if read_func is None else read_func
-        write_func = partial(np.savetxt, fmt = array_fmt) if write_func is None else write_func
-        value_type = np.ndarray if value_type is None else value_type
         super().__init__(dataset_node, name, 
                          suffix=suffix, 
+                         flag_name = flag_name,
                          read_func=read_func, 
                          write_func=write_func, 
                          value_type=value_type, 
                          filllen=filllen, 
                          fillchar=fillchar, 
                          alternate_suffix=alternate_suffix, 
+                         read_func_args = read_func_args,
+                         read_func_kwargs = read_func_kwargs,
+                         write_func_args = write_func_args,
+                         write_func_kwargs = write_func_kwargs,
                          **kwargs)
-        self.array_shape:tuple[int] = array_shape
+        self.array_shape:tuple[int]     = array_shape if array_shape is not None else (-1,)
 
-    ### IO ####
-    _FCT = TypeVar('_FCT', bound="IntArrayDictCluster")
-    _VDMT = TypeVar('_VDMT', bound=dict[int, np.ndarray])
-    _FHT = TypeVar('_FHT', bound=UnifiedFilesHandle)
+        self.read_meta.inv_format_value = self.read_inv_format
+        self.write_meta.format_value = self.write_format
 
-    class _read(UnifiedFileCluster._read[_FCT, _VDMT, _FHT]):
-        
-        def inv_format_value(self, array:np.ndarray) -> "IntArrayDictCluster._VDMT":
-            '''
-            array: np.ndarray [N, 5]
-            '''
-            dict_ = {}
-            for i in range(array.shape[0]):
-                dict_[int(array[i, 0])] = array[i, 1:].reshape(self.files_cluster.array_shape)
-            return dict_
+    @staticmethod
+    def read_inv_format(self:IOMeta["NdarrayAsTxtCluster", np.ndarray, UnifiedFilesHandle], array:np.ndarray):
+        '''
+        array: np.ndarray [N, 5]
+        '''
+        array = array.reshape(self.files_cluster.array_shape)
+        return array
     
-    class _write(UnifiedFileCluster._write[_FCT, _VDMT, _FHT]):
-        def format_value(self, value:"IntArrayDictCluster._VDMT") -> Any:
-            array = []
-            for i, (k, v) in enumerate(value.items()):
-                array.append(
-                    np.concatenate([np.array([k]).astype(v.dtype), v.reshape(-1)])
-                    )
-            array = np.stack(array)
-            return array
- 
+    @staticmethod
+    def write_format(self:IOMeta, value:np.ndarray) -> Any:
+        array = value.reshape((value.shape[0], -1))
+        return array
+
+class IntArrayDictAsTxtCluster(NdarrayAsTxtCluster[UFH, INDADC, DSNT], Generic[UFH, INDADC, DSNT]):
+
+    @staticmethod
+    def read_inv_format(self:IOMeta["IntArrayDictAsTxtCluster", dict[int, np.ndarray], UnifiedFilesHandle], array:np.ndarray):
+        '''
+        array: np.ndarray [N, 5]
+        '''
+        dict_ = {}
+        for i in range(array.shape[0]):
+            dict_[int(array[i, 0])] = array[i, 1:].reshape(self.files_cluster.array_shape)
+        return dict_
+    
+    @staticmethod
+    def write_format(self:IOMeta["IntArrayDictAsTxtCluster", dict[int, np.ndarray], UnifiedFilesHandle], value:dict[int, np.ndarray]) -> Any:
+        array = []
+        for i, (k, v) in enumerate(value.items()):
+            array.append(
+                np.concatenate([np.array([k]).astype(v.dtype), v.reshape(-1)])
+                )
+        array = np.stack(array)
+        return array
+
+

@@ -31,7 +31,6 @@ from functools import partial
 
 from . import Posture, JsonIO, JSONDecodeError, Table, extract_doc, search_in_dict, int_str_cocvt, \
     serialize_object, deserialize_object, read_file_as_str, write_str_to_file
-from .viewmeta import ViewMeta, serialize_image_container, deserialize_image_container
 from .mesh_manager import MeshMeta
 from .IOAbstract import DataMapping, DatasetNode, IOMeta, BinDict, _KT, _VT, DMT, VDMT, DSNT,\
     FilesHandle, CacheProxy, \
@@ -82,7 +81,7 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
 
         subsets = subsets if subsets is not None else self.DEFAULT_SUB_SET
         
-        self.__exclusive = False
+        self.__exclusive = True
         self.get_idx_dict()
         for subset in subsets:
             self.add_subset(subset)

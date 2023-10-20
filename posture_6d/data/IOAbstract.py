@@ -27,7 +27,6 @@ import importlib
 
 from . import Posture, JsonIO, JSONDecodeError, Table, extract_doc, search_in_dict, int_str_cocvt,\
       serialize_object, deserialize_object, test_pickleable, read_file_as_str, write_str_to_file
-from .viewmeta import ViewMeta, serialize_image_container, deserialize_image_container
 from .mesh_manager import MeshMeta
 
 DEBUG = False
@@ -906,7 +905,6 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         dict_[self.KW_write_func]    = self.export_func(self.write_func)
         dict_[self.KW_cache]         = self.cache_proxy.as_dict()
         return dict_
-
 
     @classmethod
     def from_dict(cls, cluster, dict_:dict):
@@ -2037,6 +2035,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         self._unfinished_operation = 0
 
         self.init_io_metas()
+        self.init_attrs()
         # self.register_to_dataset()
 
     @property
@@ -2085,6 +2084,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     def unregister_from_dataset(self):
         if self.identity_string() in self._dataset_node.clusters_map:
             self._dataset_node.remove_cluster(self)
+
+    def get_rely_io_parameters(self):
+        pass
     # endregion FilesCluster new methods ####
     
     # region fileshandle operation ########
@@ -2128,6 +2130,44 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
     # region io #####
     
+    # region - io rely #
+
+    @property
+    def use_rely(self):
+        if self.dataset_node is None:
+            return False
+        else:
+            return self.dataset_node.cluster_use_rely
+
+    def link_rely_on(self, cluster:"FilesCluster"):
+        if cluster not in cluster._relying_clusters:
+            cluster._relying_clusters.append(self)
+
+    def unlink_rely_on(self, cluster:"FilesCluster"):
+        if cluster in cluster._relying_clusters:
+            cluster._relying_clusters.remove(self)
+
+    def send_rely(self, rlt):
+        '''
+        send parameters to other cluster
+        '''
+        if self.use_rely:
+            for c in self._relying_clusters:
+                c.set_rely(self, rlt)
+
+    def set_rely(self, relied:"FilesCluster", rlt):
+        '''
+        set relied parameters from other cluster, relied is the cluster that send the parameters, rlt is the parameters
+        '''
+        pass
+
+    def get_rely(self, mode):
+        rlt = self._relied_paras.copy()
+        self._relied_paras.clear()
+        return rlt
+
+    # endregion - io rely #
+
     # region - io metas #
     def init_io_metas(self):
         self.read_meta:IOMeta[FCT, VDMT, FHT]            = self._read(self)
@@ -2136,6 +2176,10 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         self.remove_meta:IOMeta[FCT, VDMT, FHT]          = self._remove(self)
         self.paste_file_meta:IOMeta[FCT, VDMT, FHT]      = self._paste_file(self)
         self.change_dir_meta:IOMeta[FCT, VDMT, FHT]      = self._change_dir(self)
+
+    def init_attrs(self):
+        self._relying_clusters:list[FilesCluster]    = []
+        self._relied_paras                           = {}
 
     def cvt_key(self, key):
         if self.KEY_TYPE == int:
@@ -2149,8 +2193,8 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         log_type = io_meta.LOG_TYPE
         warning_info = io_meta.WARNING_INFO
 
-        allow_write         = force or self.ALWAYS_ALLOW_WRITE
-        allow_overwrite     = force or self.ALWAYS_ALLOW_OVERWRITE
+        allow_write         = (force or self.ALWAYS_ALLOW_WRITE)        and not self.writable
+        allow_overwrite     = (force or self.ALWAYS_ALLOW_OVERWRITE)    and not self.overwrite_allowed
         
         def wrapper(*, src:int = None, dst:int = None, value = None, **other_paras): # type: ignore
             nonlocal self, log_type, warning_info
@@ -2631,9 +2675,15 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             return self.data_i_upper
 
     def read(self, src:int, *, force = False, **other_paras) -> VDMT:
-        return self._switch_io_operation(self.read_data, self.read_elem)(src = src, force = force, **other_paras)
+        read_rely_paras = self.get_rely('r')
+        other_paras.update(read_rely_paras)
+        rlt = self._switch_io_operation(self.read_data, self.read_elem)(src = src, force = force, **other_paras)
+        self.send_rely(rlt, 'r')
 
     def write(self, dst:int, value:VDMT, *, force = False, **other_paras) -> None:
+        self.send_rely(value, 'w')
+        write_rely_paras = self.get_rely('w')
+        other_paras.update(write_rely_paras)
         return self._switch_io_operation(self.write_data, self.write_elem)(dst = dst, value = value, force = force, **other_paras)
         
     def modify_key(self, src:int, dst:int, *, force = False, **other_paras) -> None:
@@ -2778,8 +2828,8 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         self.follow_parent = True
 
     def init_dataset_attr_hook(self):
-        
         os.makedirs(self.top_directory, exist_ok=True) 
+        self._cluster_use_rely = False
         self._unfinished_operation = 0
     # endregion - override methods #
 
@@ -2917,6 +2967,26 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # endregion node and cluster operation #
 
     # region clusters #####
+    @property
+    def cluster_use_rely(self):
+        return self._cluster_use_rely
+    
+    @cluster_use_rely.setter
+    def cluster_use_rely(self, value):
+        self._cluster_use_rely = value
+        if value == True and not self.cluster_use_rely:
+            for cluster in self.clusters:
+                cluster._relied_paras.clear()
+
+    @staticmethod
+    def cluster_use_rely_decorator(func):
+        def wrapper(self:DatasetNode, *args, **kwargs):
+            self.cluster_use_rely = True
+            rlt = func(self, *args, **kwargs)
+            self.cluster_use_rely = False
+            return rlt
+        return wrapper
+
     def init_clusters_hook(self):
         pass
         # unfinished = self.mark_exist()
@@ -2993,6 +3063,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # endregion node ###
 
     # region io ###
+    @cluster_use_rely_decorator
     def raw_read(self, src, *, force = False, **other_paras) -> dict[str, Any]:
         read_rlt = {}
         with self.get_writer(force).allow_overwriting():
@@ -3001,6 +3072,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
                 read_rlt[obj.identity_name()] = rlt
         return read_rlt
     
+    @cluster_use_rely_decorator
     def raw_write(self, dst, values:dict[str, Any], *, force = False, **other_paras) -> None:
         assert len(values) == len(self.elem_clusters)
         with self.get_writer(force).allow_overwriting():

@@ -28,7 +28,7 @@ from .dataCluster import UnifiedFilesHandle, UnifiedFileCluster,\
                         DictLikeCluster, DictLikeHandle
 from .spliter import Spliter, SpliterGroup
 # from . import Posture, JsonIO, JSONDecodeError, Table, extract_doc, search_in_dict, int_str_cocvt
-from .viewmeta import ViewMeta, serialize_image_container, deserialize_image_container
+
 from .mesh_manager import MeshMeta
 
 FCT = TypeVar('FCT', bound='FilesCluster') # files cluster type
@@ -134,10 +134,12 @@ def test_dataset():
     dsn2.all_cache_to_file(force=True)
     dsn2.clear(force=True, clear_completely=True)
 
-
 class Dataset(DatasetNode[FCT, DST, VDST], Generic[FCT, DST, VDST]):
 
-    SPLIT_PARA = {"default": ["train", "val"]}
+    DEFAULT_SPLITER_NAME = "default"
+    DEFAULT_SUBSETS = ["train", "val"]
+
+    SPLIT_PARA = {DEFAULT_SPLITER_NAME: DEFAULT_SUBSETS}
 
     def init_clusters_hook(self):
         super().init_clusters_hook()
@@ -164,6 +166,10 @@ class Dataset(DatasetNode[FCT, DST, VDST], Generic[FCT, DST, VDST]):
         return self.spliter_group.val_idx_list
     
     @property
+    def default_spliter(self):
+        return self.spliter_group.get_cluster(self.DEFAULT_SPLITER_NAME)
+
+    @property
     def default_train_idx_array(self):
         return self.spliter_group.get_cluster(SpliterGroup.DEFAULT_SPLIT_MODE[0]).get_idx_list(Spliter.KW_TRAIN)
     
@@ -187,3 +193,47 @@ class Dataset(DatasetNode[FCT, DST, VDST], Generic[FCT, DST, VDST]):
                 self.spliter_group.copy_elem(src, dst)
             if src not in self.keys():
                 self.spliter_group.remove_elem(src)
+
+class Mix_Dataset(Dataset[FCT, DST, VDST]):
+    REALITY_SPLITER_NAME = "reality"
+    BASIS_SPLITER_NAME = "basis"
+    REALITY_SUBSETS = ["real", "sim"]
+    BASIS_SUBSETS = ["basic", "augment"]
+
+    SPLIT_PARA = Dataset.SPLIT_PARA.copy()
+    SPLIT_PARA.update(
+        {
+            REALITY_SPLITER_NAME: REALITY_SUBSETS,
+            BASIS_SPLITER_NAME: BASIS_SUBSETS      
+        }
+    )
+
+    @property
+    def reality_spliter(self):
+        return self.spliter_group.get_cluster(self.REALITY_SPLITER_NAME)
+    
+    @property
+    def real_idx_array(self):
+        return self.reality_spliter.get_idx_list(self.REALITY_SUBSETS[0])
+    
+    @property
+    def sim_idx_array(self):
+        return self.reality_spliter.get_idx_list(self.REALITY_SUBSETS[1])
+
+    @property
+    def basis_spliter(self):
+        return self.spliter_group.get_cluster(self.BASIS_SPLITER_NAME)
+    
+    @property
+    def basic_idx_array(self):
+        return self.basis_spliter.get_idx_list(self.BASIS_SUBSETS[0])
+    
+    @property
+    def augment_idx_array(self):
+        return self.basis_spliter.get_idx_list(self.BASIS_SUBSETS[1])
+    
+    def record_data_type(self, data_i, is_real, is_basic):
+        reality = self.REALITY_SUBSETS[0] if is_real else self.REALITY_SUBSETS[1]
+        basis = self.BASIS_SUBSETS[0] if is_basic else self.BASIS_SUBSETS[1]
+        self.reality_spliter.set_one(data_i, reality, True)
+        self.basis_spliter.set_one(data_i, basis, True)
