@@ -492,9 +492,10 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
     
     @default_value_type.setter
     def default_value_type(self, value):
-        assert callable(value), "default_value_type must be callable"
+        assert isinstance(value, type)
+        if self.__default_value_type is not None:
+            warnings.warn(f"default_value_type has been set from {self.__default_value_type} to {value}, but it is not recommended")
         self.__default_value_type = value
-
 
     @property
     def row_name_type(self):
@@ -520,6 +521,10 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         if self.__default_value_type is not None:
             return self.__default_value_type()
         return None
+
+    def assert_default_value_type(self, value):
+        if self.__default_value_type is not None:
+            assert isinstance(value, self.__default_value_type), "value must be an instance of default_value_type"
 
     def _row_name_filter(self, row_name:ROWKEYT) -> ROWKEYT:
         return self.__name_filter(row_name, self.__row_name_type, self.__row_names)
@@ -588,12 +593,12 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         self.add_column(new_name)
         self.set_column(new_name, col)
 
-    def get_row(self, row_name:Union[int,str]):
+    def get_row(self, row_name:Union[int,str]) -> dict[COLKETT, ITEM]:
         row_name = self._row_name_filter(row_name)
         if self.__key_assert(row_name, self.__row_names, True):
             return types.MappingProxyType(self.__data[row_name])
 
-    def get_column(self, col_name:Union[int,str]):
+    def get_column(self, col_name:Union[int,str]) -> dict[ROWKEYT, ITEM]:
         col_name = self._col_name_filter(col_name)
         if self.__key_assert(col_name, self.__col_names, True):
             return {row_name: self.__data[row_name][col_name] for row_name in self.__row_names}
@@ -618,7 +623,7 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
                 else:
                     yield self.__data[row_name][col_name]
 
-    def update(self, other:dict[ROWKEYT, dict[COLKETT, ITEM]]):
+    def update(self, other:Union[dict[ROWKEYT, dict[COLKETT, ITEM]], "Table[ROWKEYT, COLKETT, ITEM]"]):
         for row_name, row in other.items():
             self.add_row(row_name, exist_ok=True)
             for col_name, value in row.items():
@@ -650,49 +655,71 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
                 if judge_invalid_func(self.__data[row_name][col_name]):
                     self.__data[row_name][col_name] = self.gen_default_value()
 
-    def __getitem__(self, keys:Union[int, str, tuple[Union[int, str]]]):
-        if isinstance(keys, (int, str)):
-            row_name = keys
-            return self.get_row(row_name)
-        elif isinstance(keys, tuple):
-            assert len(keys) == 2, "Keys must be a tuple of length 2"
-            row_name, col_name = keys
-            if isinstance(row_name, (int, str)) and isinstance(col_name, (int, str)):
-                col_name:COLKETT = self._col_name_filter(col_name)
-                row = self.get_row(row_name)
-                return row[col_name]
+    def __process_item(self, keys:Union[int, str, tuple[Union[int, str]], slice]):
+        def get_key_list(key, names, filter_func:Callable):
+            if isinstance(key, slice):
+                key_list = names[key]
+            elif isinstance(key, (list, tuple, range)):
+                key_list = [filter_func(x) for x in key]
             else:
-                raise NotImplementedError
-        else:
-            raise ValueError
+                key_list = [filter_func(key)]
+            return key_list
         
-    def __setitem__(self, keys:tuple[Union[int, str]], value:ITEM = None):
-        assert isinstance(keys, tuple), "Keys must be a tuple"
-        if len(keys) == 2:
-            row_name, col_name = keys
-            # process row_name
-            if isinstance(row_name, slice):
-                # only support slice(None, None, None)
-                assert row_name == slice(None, None, None), "Only support slice(None, None, None)"
-                row_name_list = self.__row_names[row_name]
-            elif isinstance(row_name, (list, tuple, range)):
-                row_name_list = [self._row_name_filter(x) for x in row_name]
-            else:
-                row_name_list = [self._row_name_filter(row_name)]
-            # process col_name
-            if isinstance(col_name, slice):
-                assert col_name == slice(None, None, None), "Only support slice(None, None, None)"
-                col_name_list = self.__col_names[col_name]
-            elif isinstance(col_name, (list, tuple, range)):
-                col_name_list = [self._col_name_filter(x) for x in col_name]
-            else:
-                col_name_list = [self._col_name_filter(col_name)]
-
-            for row_name in row_name_list:
-                for col_name in col_name_list:
-                    self.__data[row_name][col_name]= value
+        if not isinstance(keys, tuple):
+            # if keys is a row_name, convert it to a tuple
+            assert isinstance(keys, self.__row_name_type), f"key must be a tuple or {self.__row_name_type.__name__}"
+            keys = (keys, slice(None, None, None))
         else:
-            raise ValueError("Keys must be a tuple of length 2")
+            assert len(keys) == 2, "Keys must be a tuple of length 2"
+        row_key, col_key = keys
+        if isinstance(row_key, (int, str)) and isinstance(col_key, (int, str)):
+            row_key = self._row_name_filter(row_key)
+            col_key = self._col_name_filter(col_key)
+            return row_key, col_key, False
+        elif isinstance(row_key, (list, tuple, range, slice)) or isinstance(col_key, (list, tuple, range, slice)):
+            row_key_list = get_key_list(row_key, self.__row_names, self._row_name_filter)
+            col_key_list = get_key_list(col_key, self.__col_names, self._col_name_filter)
+            return row_key_list, col_key_list, True
+        else:
+            raise TypeError("invalid key type for Table")
+
+    def __assert_keys_list(self, row_key_list, col_key_list):
+        for row_name in row_key_list:
+            assert row_name in self.__row_names, f"row_name '{row_name}' does not exist"
+        for col_name in col_key_list:
+            assert col_name in self.__col_names, f"col_name '{col_name}' does not exist"
+
+    def __getitem__(self, keys:Union[int, str, tuple[Union[int, str]]]):
+        row_key, col_key, table_mode = self.__process_item(keys)
+        if table_mode:
+            self.__assert_keys_list(row_key, col_key)
+            table_dict:dict[ROWKEYT, dict[COLKETT, ITEM]] = {}
+            for rn in row_key:
+                table_dict[rn] = {}
+                for cn in col_key:
+                    table_dict[rn][cn] = self.__data[rn][cn]
+            return table_dict
+        else:                
+            return self.__data[row_key][col_key]
+        
+    def __setitem__(self, 
+                    keys:tuple[Union[int, str]], 
+                    value:Union[ITEM, dict[ROWKEYT, dict[COLKETT, ITEM]], "Table[ROWKEYT, COLKETT, ITEM]"]  = None):
+        row_key, col_key, table_mode = self.__process_item(keys)
+        if table_mode:
+            self.__assert_keys_list(row_key, col_key)
+            # check value
+            table_dict = {}
+            for rn in row_key:
+                table_dict[rn] = {}
+                for cn in col_key:
+                    _v = self.__data[rn][cn]
+                    self.assert_default_value_type(_v)
+                    table_dict[rn][cn] = self.__data[rn][cn]
+            self.update(table_dict)
+        else:              
+            self.assert_default_value_type(value)
+            self.__data[row_key][col_key] = value
         
     def __str__(self) -> str:
         if len(self.__data) == 0:

@@ -15,9 +15,9 @@ class PipeLine():
         self.sub_dir = sub_dir
         self.directory = os.path.join(dataset_name, sub_dir)
         #
-        self.model_manager = ModelManager(self.directory, flag_name="model_manager")
+        self.model_manager = ModelManager(self.directory, "", flag_name="model_manager")
         #
-        self.data_recorder = DataRecorder(self.directory, flag_name="data_recorder")
+        self.data_recorder = DataRecorder(self.directory, "", flag_name="data_recorder")
         #
         if self.data_recorder.aruco_floor_json.all_files_exist:
             self.aruco_detector = ArucoDetector(self.data_recorder.aruco_floor_json.read(0))

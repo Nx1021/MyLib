@@ -70,7 +70,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
     DEFAULT_WRITE_FUNC = None
     DEFAULT_VALUE_TYPE = None
 
-    def __init__(self, dataset_node:DSNT, name: str,
+    def __init__(self, dataset_node:DSNT, mapping_name: str,
                  suffix:str = None, *,
                  flag_name = "", 
                  read_func:Callable[[str], VDMT] = None, 
@@ -111,7 +111,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         self.filllen = filllen
         self.fillchar = fillchar
         self.alternate_suffix = alternate_suffix if alternate_suffix is not None else []  
-        super().__init__(dataset_node, name, flag_name=flag_name)
+        super().__init__(dataset_node, mapping_name, flag_name=flag_name)
         self.cache_priority = False 
 
     #####
@@ -122,6 +122,14 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
             return fh
         else:
             raise NotImplementedError
+    
+    # @classmethod
+    # def from_cluster(cls:type[UFC], cluster:UFC, dataset_node:DSNT = None, mapping_name = None, *args, **kwargs) -> UFC:
+    #     dataset_node    = cluster.dataset_node if dataset_node is None else dataset_node
+    #     mapping_name    = cluster.mapping_name if mapping_name is None else mapping_name
+    #     new_cluster:UFC = cls(dataset_node, mapping_name)
+    #     return new_cluster
+
     #####
     def format_corename(self, data_i: int):
         filllen = self.filllen
@@ -313,8 +321,8 @@ class DisunifiedFilesHandle(FilesHandle[DFC, VDMT], Generic[DFC, VDMT]):
 class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC, DSNT, VDMT]):
     FILESHANDLE_TYPE = DisunifiedFilesHandle
 
-    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, flag_name = "", fileshandle_list = None, **kwargs) -> None:
-        super().__init__(dataset_node, name, *args, flag_name=flag_name, **kwargs)
+    def __init__(self, dataset_node: Union[str, DatasetNode], mapping_name: str, *args, flag_name = "", fileshandle_list = None, **kwargs) -> None:
+        super().__init__(dataset_node, mapping_name, *args, flag_name=flag_name, **kwargs)
         fileshandle_list = [] if fileshandle_list is None else fileshandle_list
         for fh in fileshandle_list:
             self._set_fileshandle(self.data_i_upper, fh)
@@ -535,8 +543,8 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDLT], Generic[DLFH
             stream = self.streams[data_i]
             stream.write({elem_i: value})
 
-    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, flag_name = "", **kwargs) -> None:
-        super().__init__(dataset_node, name, *args, flag_name = flag_name, **kwargs)
+    def __init__(self, dataset_node: Union[str, DatasetNode], mapping_name: str, *args, flag_name = "", **kwargs) -> None:
+        super().__init__(dataset_node, mapping_name, *args, flag_name = flag_name, **kwargs)
         self.__save_mode = self.SAVE_AFTER_CLOSE
         self.stream_writer = self.StreamlyWriter(self)
         
@@ -687,8 +695,8 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDLT], Generic[DLFH
         self.__class__.save_memory_func(self.MemoryData_path, dict_wo_cache)
 
     @classmethod
-    def from_cluster(cls:type[DLC], cluster:DLC, dataset_node:DSNT = None, name = None, *args, **kwargs) -> DLC:
-        new_cluster = super().from_cluster(cluster, dataset_node=dataset_node, name=name, *args, **kwargs)
+    def from_cluster(cls:type[DLC], cluster:DLC, dataset_node:DSNT = None, mapping_name = None, *args, flag_name = "",  **kwargs) -> DLC:
+        new_cluster = super().from_cluster(cluster, dataset_node=dataset_node, mapping_name=mapping_name, *args, flag_name = flag_name, **kwargs)
         new_cluster.open()
         for fh in cluster.query_all_fileshandle():
             new_fh = cls.FILESHANDLE_TYPE.from_fileshandle(new_cluster, fh, cache={})
@@ -778,8 +786,8 @@ class DictFile(DisunifiedFileCluster[DFH, DFC, DSNT, dict], Generic[DFH, DFC, DS
             raise ValueError("DictFile can only have one fileshandle")
         super()._set_fileshandle(data_i, fileshandle)
         
-    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, flag_name="", file_name = ".json", **kwargs) -> None:
-        super().__init__(dataset_node, name, *args, flag_name=flag_name, fileshandle_list=[], **kwargs)
+    def __init__(self, dataset_node: Union[str, DatasetNode], mapping_name: str, *args, flag_name="", file_name = ".json", **kwargs) -> None:
+        super().__init__(dataset_node, mapping_name, *args, flag_name=flag_name, fileshandle_list=[], **kwargs)
         json_file = DictLikeHandle.from_name(self, file_name, read_func=JsonIO.load_json, write_func=JsonIO.dump_json)
         self._set_fileshandle(0, json_file)
         self.write_synchronous = True
@@ -844,7 +852,7 @@ class NdarrayAsTxtCluster(UnifiedFileCluster[UFH, NDAC, DSNT, VNDAC], Generic[UF
     DEFAULT_WRITE_FUNC = np.savetxt
     DEFAULT_VALUE_TYPE = np.ndarray
     
-    def __init__(self, dataset_node:DSNT, name: str,
+    def __init__(self, dataset_node:DSNT, mapping_name: str,
                  suffix:str = None, *,
                  flag_name = "",
                  read_func:Callable[[str], VDMT] = None, 
@@ -860,7 +868,7 @@ class NdarrayAsTxtCluster(UnifiedFileCluster[UFH, NDAC, DSNT, VNDAC], Generic[UF
                  array_shape:tuple[int] = None, 
                  **kwargs
                  ) -> None:
-        super().__init__(dataset_node, name, 
+        super().__init__(dataset_node, mapping_name, 
                          suffix=suffix, 
                          flag_name = flag_name,
                          read_func=read_func, 

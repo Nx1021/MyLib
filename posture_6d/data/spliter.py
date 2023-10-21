@@ -3,7 +3,7 @@
 # from toolfunc import *
 from _collections_abc import dict_items, dict_keys, dict_values
 from collections.abc import Iterator
-from MyLib.posture_6d.data.IOAbstract import FilesCluster
+from MyLib.posture_6d.data.IOAbstract import FilesCluster, Node
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy import ndarray
@@ -74,8 +74,8 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
 
     ALWAYS_ALLOW_WRITE = True
 
-    def __init__(self, dataset_node: Union[str, DatasetNode], name: str, *args, subsets = None, **kwargs) -> None:
-        super().__init__(dataset_node, name, *args, **kwargs)
+    def __init__(self, dataset_node: Union[str, DatasetNode], mapping_name: str, *args, subsets = None, **kwargs) -> None:
+        super().__init__(dataset_node, mapping_name, *args, **kwargs)
         self.split_fileshandle:SpliterFilesHandle = self.FILESHANDLE_TYPE.from_name(self, self.SPLIT_FILE)
         self._set_fileshandle(0, self.split_fileshandle)
 
@@ -200,10 +200,12 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
             super()._set_fileshandle(data_i, fh)
 
     def add_elem_idx(self, elem_i:int):
-        self.write_elem(elem_i, {})
+        if elem_i not in self.elem_keys():
+            self.write_elem(elem_i, {})
 
     def remove_elem_idx(self, elem_i:int):
-        self.remove_elem(elem_i)
+        if elem_i in self.elem_keys():
+            self.remove_elem(elem_i)
 
     def add_subset(self, subset:str):
         self.split_table.add_column(subset, exist_ok=True)
@@ -303,7 +305,7 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
         return {subset: self.get_idx_list(subset) for subset in self.subsets}
     
     def save_as_txt(self, mask_mode = True):
-        save_paths = [os.path.join(self.data_path, f"{name}.txt") for name in self.subsets]
+        save_paths = [os.path.join(self.data_path, f"{n}.txt") for n in self.subsets]
         save_paths_dict = {subset: save_path for subset, save_path in zip(self.subsets, save_paths)} # subset: save_path
         save_array = {}
         if mask_mode:
@@ -335,9 +337,9 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
 class SpliterGroup(DatasetNode[Spliter, SPG, Table[int, str, bool]], Generic[SP, SPG]):
     DEFAULT_SPLIT_MODE = ["default"]
 
-    def __init__(self, directory, *, flag_name="", parent: DatasetNode = None, split_paras = None) -> None:
+    def __init__(self, top_directory, mapping_name, *, flag_name="", split_paras = None) -> None:
         self.__split_paras:dict[str, list[str]] = split_paras if split_paras is not None else {self.DEFAULT_SPLIT_MODE: None}
-        super().__init__(directory, flag_name=flag_name, parent=parent)
+        super().__init__(top_directory, mapping_name, flag_name=flag_name)
 
     def init_clusters_hook(self):
         super().init_clusters_hook()
@@ -386,3 +388,37 @@ class SpliterGroup(DatasetNode[Spliter, SPG, Table[int, str, bool]], Generic[SP,
     def copy_elem(self, src:int, dst:int):
         for spliter in self.clusters_map.values():
             spliter.write_elem(dst, spliter.read_elem(src))
+
+    # @Node.forward_propagate
+    # def update_overview(self, log_type, src, dst, value, cluster:FilesCluster):
+    #     super().update_overview(log_type, src, dst, value, cluster)
+    #     if log_type == self.LOG_READ or\
+    #        log_type == self.LOG_CHANGE or\
+    #        log_type == self.LOG_OPERATION:
+    #         return
+    #     if log_type == self.LOG_ADD:
+    #         self.add_elem(dst)
+    #     if log_type == self.LOG_REMOVE and dst in self.keys():
+    #         if dst not in self.keys():
+    #             self.remove_elem(dst)
+    #     if log_type == self.LOG_MOVE:
+    #         if src in self.keys():
+    #             self.copy_elem(src, dst)
+    #         if src not in self.keys():
+    #             self.remove_elem(src)
+
+    def update_clusters(self, log_type, src, dst, value, cluster):
+        if log_type == self.LOG_READ or\
+           log_type == self.LOG_CHANGE or\
+           log_type == self.LOG_OPERATION:
+            return
+        if log_type == self.LOG_ADD:
+            self.add_elem(dst)
+        if log_type == self.LOG_REMOVE and dst in self.keys():
+            if dst not in self.keys():
+                self.remove_elem(dst)
+        if log_type == self.LOG_MOVE:
+            if src in self.keys():
+                self.copy_elem(src, dst)
+            if src not in self.keys():
+                self.remove_elem(src)

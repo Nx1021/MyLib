@@ -24,12 +24,15 @@ from typing import Any, Union, Callable, TypeVar, Generic, Iterable, Generator
 from functools import partial
 import copy
 import importlib
+import inspect
 
 from . import Posture, JsonIO, JSONDecodeError, Table, extract_doc, search_in_dict, int_str_cocvt,\
       serialize_object, deserialize_object, test_pickleable, read_file_as_str, write_str_to_file
 from .mesh_manager import MeshMeta
 
 DEBUG = False
+
+NODE = TypeVar('NODE', bound="Node")
 
 IOSM = TypeVar('IOSM', bound="IOStatusManager") # type of the IO status manager
 RGSITEM = TypeVar('RGSITEM')
@@ -115,6 +118,24 @@ def get_with_priority(*args):
     for arg in args:
         if arg is not None:
             return arg
+        
+def get_func_name(obj, func):
+    func_name = func.__name__
+    if hasattr(obj, func_name):
+        return func_name
+    else:
+        for name in dir(obj):
+            if getattr(obj, name) == func:
+                return name
+            
+def get_function_args(function, *exclude:str):
+    signature = inspect.signature(function)
+    rlt = []
+    ok_kind = [inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_ONLY]
+    for param in signature.parameters.values():
+        if param.kind in ok_kind and param.name not in exclude:
+            rlt.append(param.name)
+    return rlt
 # endregion functions ###
 
 class IOStatusManager():
@@ -275,7 +296,7 @@ class IOStatusManager():
                     result.append([log_type, key, value])
             return result
         else:
-            return None
+            return []
 
     def log_to_mark_file(self, log_type, src=None, dst=None, value=None):
         ## TODO
@@ -321,7 +342,7 @@ class IOStatusManager():
     def overwrite_forbidden(self):
         return not self.__overwrite_allowed and not self.readonly and not self.closed
     
-    def close(self, closed:bool = True):
+    def __close_core(self, closed:bool = True):
         if not self.closed and closed:
             self.stop_writing()
             self.set_readonly()
@@ -330,14 +351,7 @@ class IOStatusManager():
             self.open_hook()
         self.__closed = closed
 
-    def open(self, opened:bool = True):
-        self.close(not opened)
-
-    def reopen(self):
-        self.close()
-        self.open()
-
-    def set_readonly(self, readonly:bool = True):
+    def __set_readonly_core(self, readonly:bool = True):
         if (self.readonly ^ readonly) and self.closed:
             warnings.warn(f"the Status is closed, please call '{self.set_readonly.__name__}' when it's opened", IOStatusWarning)
         if not self.readonly and readonly:
@@ -346,11 +360,8 @@ class IOStatusManager():
         elif self.readonly and not readonly:
             self.writable_hook()
         self.__readonly = readonly
-        
-    def set_writable(self, writable:bool = True):
-        self.set_readonly(not writable)    
 
-    def stop_writing(self, stop_writing:bool = True):
+    def __stop_writing_core(self, stop_writing:bool = True):
         if (self.wait_writing ^ stop_writing) and (self.closed or self.readonly):
             warnings.warn(f"the Status is closed or readonly, please call '{self.stop_writing.__name__}' when it's writable", IOStatusWarning)
         if not self.wait_writing and stop_writing:
@@ -365,11 +376,7 @@ class IOStatusManager():
                 pass
             self.start_writing_hook()
 
-    def start_writing(self, start_writing:bool = True, overwrite_allowed:bool = False):
-        self.set_overwrite_allowed(overwrite_allowed)
-        self.stop_writing(not start_writing)
-
-    def set_overwrite_allowed(self, overwrite_allowed:bool = True):
+    def __set_overwrite_allowed_core(self, overwrite_allowed:bool = True):
         if (self.overwrite_allowed ^ overwrite_allowed) and (self.closed or self.readonly):
             warnings.warn(f"the Status is closed or readonly, please call '{self.set_overwrite_allowed.__name__}' when it's writable", IOStatusWarning)
         if not self.overwrite_allowed and overwrite_allowed:
@@ -378,8 +385,34 @@ class IOStatusManager():
             self.set_overwrite_forbidden_hook()
         self.__overwrite_allowed = overwrite_allowed
 
+    def close(self, closed:bool = True):
+        self.__close_core(closed)
+
+    def open(self, opened:bool = True):
+        self.__close_core(not opened)
+
+    def reopen(self):
+        self.close()
+        self.open()
+
+    def set_readonly(self, readonly:bool = True):
+        self.__set_readonly_core(readonly)
+        
+    def set_writable(self, writable:bool = True):
+        self.__set_readonly_core(not writable)    
+
+    def stop_writing(self, stop_writing:bool = True):
+        self.__stop_writing_core(stop_writing)
+
+    def start_writing(self, start_writing:bool = True, overwrite_allowed:bool = False):
+        self.set_overwrite_allowed(overwrite_allowed)
+        self.__stop_writing_core(not start_writing)
+
+    def set_overwrite_allowed(self, overwrite_allowed:bool = True):
+        self.__set_overwrite_allowed_core(overwrite_allowed)
+
     def set_overwrite_forbidden(self, overwrite_forbidden:bool = True):
-        self.set_overwrite_allowed(not overwrite_forbidden)
+        self.__set_overwrite_allowed_core(not overwrite_forbidden)
     
     def is_closed(self, with_warning = False):
         '''Method to check if the cluster is closed.'''
@@ -985,13 +1018,13 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                   read_func:Callable = None, write_func:Callable = None, 
                   cache = None, value_type:Callable = None,  #type: ignore
                   _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None):
-        def parse_one(filename:str):
-            splitlist = filename.split(os.sep, 2)
+        def parse_one(file_name:str):
+            splitlist = file_name.split(os.sep, 2)
             if len(splitlist) == 1:
-                sub_dir, name = "", splitlist[0]
+                sub_dir, file_name = "", splitlist[0]
             else:
-                sub_dir, name = splitlist[0], splitlist[1]
-            basename, suffix = os.path.splitext(name)
+                sub_dir, file_name = splitlist[0], splitlist[1]
+            basename, suffix = os.path.splitext(file_name)
 
             if _extract_corename_func is not None:
                 corename, prefix, appendname, _prefix_joiner, _appendnames_joiner = _extract_corename_func(basename)
@@ -1208,12 +1241,12 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         return os.path.join(self.data_path, self.sub_dir)
 
     def get_path(self, get_list = False) -> Union[list[str], str]:
-        name = self.get_name(get_list = get_list)
+        file_name = self.get_name(get_list = get_list)
         dir_ = self.get_dir()
-        if isinstance(name, str):
-            return os.path.join(dir_, name)
+        if isinstance(file_name, str):
+            return os.path.join(dir_, file_name)
         else:
-            return [os.path.join(dir_, x) for x in name]
+            return [os.path.join(dir_, x) for x in file_name]
             
     def get_key(self):
         return self.cluster.MemoryData._reverse_dict[self] # type: ignore
@@ -1361,7 +1394,114 @@ class BinDict(dict[_KT, _VT], Generic[_KT, _VT]):
     def __repr__(self):
         return f"{self.__class__.__name__}({super().__repr__()})"
 
-class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generic[_VT, DMT, VDMT]):
+class Node(Generic[NODE]):
+    PARENT_TYPE = None
+    CHILD_TYPE = None
+
+    KW_FORWARD = "fwd"
+    KW_BACKWARD = "bwd"
+    KW_BI_DIRECTION = "bid"
+
+    def __init__(self) -> None:
+        self.__parent:list[NODE] = [None]
+        self.__children:list[NODE] = []
+
+        self.linked_with_children = True
+        self.follow_parent = True
+
+    @staticmethod
+    def __backward(obj:"Node[NODE]", funcname, *args, **kwargs):
+        if obj.parent is not None and obj.linked_with_children and hasattr(obj.parent, funcname):
+            getattr(obj.parent, funcname)(*args, **kwargs)
+
+    @staticmethod
+    def __forward(obj:"Node[NODE]", funcname, *args, **kwargs):
+        for child in obj._children:
+            if child.follow_parent and hasattr(child, funcname):
+                getattr(child, funcname)(*args, **kwargs)
+
+    @staticmethod
+    def forward_propagate(func:Callable):
+        '''
+        root -> leaf
+        '''
+        # propagating = False
+        def forward_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
+            # nonlocal propagating
+            funcname = get_func_name(obj, func)
+            func(obj, *args, **kwargs)
+            # if not propagating:
+            propagating = True
+            Node.__forward(obj, funcname, *args, **kwargs)
+            propagating = False
+        return forward_propagate_wrapper
+
+    @staticmethod
+    def backward_propagate(func:Callable):
+        '''
+        leaf -> root
+        '''
+        # propagating = False
+        def backward_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
+            # nonlocal propagating
+            funcname = get_func_name(obj, func)
+            # if not propagating:
+            propagating = True
+            Node.__backward(obj, funcname, *args, **kwargs)
+            propagating = False
+            func(obj, *args, **kwargs)
+        return backward_propagate_wrapper
+    
+    # @staticmethod
+    # def bi_direction_propagate(func:Callable):
+    #     '''
+    #     root -> leaf -> root
+    #     '''
+    #     def bi_direction_propagate_wrapper(obj:Node[NODE], *args, _propagat_direction = Node.KW_BI_DIRECTION, **kwargs):
+    #         funcname = get_func_name(obj, func)
+            
+    #         if _propagat_direction == Node.KW_BI_DIRECTION or _propagat_direction == Node.KW_BACKWARD:
+    #             Node.__backward(obj, funcname, *args, **kwargs)
+    #         func(obj, *args, **kwargs)
+    #         if _propagat_direction == Node.KW_BI_DIRECTION or _propagat_direction == Node.KW_FORWARD:
+    #             Node.__forward(obj, funcname, *args, **kwargs)
+    #     return bi_direction_propagate_wrapper
+
+    @property
+    def parent(self) -> NODE:
+        return self.__parent[0]
+    
+    @property
+    def _children(self) -> tuple[NODE]:
+        return tuple(self.__children)
+
+    def _set_parent(self, parent):
+        self.__parent[0] = parent
+
+    def _add_child(self, child_node:NODE):
+        child_type = self.CHILD_TYPE if self.CHILD_TYPE is not None else Node
+        assert isinstance(child_node, child_type), f"child_node must be Node, not {type(child_node)}"
+        if child_node in self._children:
+            return
+        child_node._set_parent(self)
+        self.__children.append(child_node)
+
+    def _remove_child(self, child_node:NODE):
+        child_type = self.CHILD_TYPE if self.CHILD_TYPE is not None else Node
+        assert isinstance(child_node, child_type), f"child_node must be Node, not {type(child_node)}"
+        if child_node in self._children:
+            child_node._set_parent(None)
+            self.__children.remove(child_node)
+
+    def _move_node(self, new_parent:NODE):
+        parent_type = self.PARENT_TYPE if self.PARENT_TYPE is not None else Node
+        assert isinstance(new_parent, parent_type) or new_parent is None, f"new_parent must be Node, not {type(new_parent)}"
+        if self.parent is not None:
+            self.parent._remove_child(self)
+        if new_parent is not None:
+            new_parent._add_child(self)
+
+class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataMapping"], ABC, Generic[_VT, DMT, VDMT]):
     _DMT = TypeVar('_DMT', bound="DataMapping")
     _VDMT = TypeVar('_VDMT')
 
@@ -1376,7 +1516,12 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     save_memory_func:Callable[[str, dict], None]   = serialize_object
 
     # region DataMapping override for _RegisterInstance ##
+
     INDENTITY_PARA_NAMES = ["_top_directory", "mapping_name", "flag_name"]
+    
+    def __new__(cls, dataset_node:Union[str, "DatasetNode"], mapping_name: str = "", *args, flag_name = "", **kwargs):
+        return super().__new__(cls, dataset_node, mapping_name, *args, flag_name = flag_name, **kwargs)
+    
     @classmethod
     def register(cls, identity_string, obj:"DataMapping"):
         for other_obj in cls._registry.values():
@@ -1398,14 +1543,35 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         else:
             return self.mapping_name
 
-    def init_identity(self, top_directory:str, name: str, *args, flag_name = "", **kwargs):
+    def init_identity(self, parent_like:Union[str, "DatasetNode"], mapping_name: str, *args, flag_name = "", **kwargs):
         '''
         principle: the parameter of identity can not be changed once it has been inited
         '''
-        self._top_directory = top_directory
-        self.mapping_name = name  
-        self.flag_name = flag_name         
+        if isinstance(parent_like, str):
+            self._top_directory = parent_like
+        elif isinstance(parent_like, DatasetNode):
+            self._top_directory = os.path.join(parent_like.data_path, mapping_name)
+            # assert is_subpath(self._top_directory, parent_like.top_directory), f"{self.top_directory} is not inside {parent_like.top_directory}"
+        else:
+            raise TypeError(f"parent_like must be str or DatasetNode, not {type(parent_like)}")
+
+        self.mapping_name = mapping_name       
+        self.flag_name = flag_name 
     # endregion DataMapping override ##
+
+    # region DataMapping override for Node ####
+
+    @property
+    def children_names(self):
+        return [x.identity_name() for x in self._children]
+
+    def get_child(self, name):
+        for child in self._children:
+            if child.identity_name() == name:
+                return child
+        raise KeyError(f"{name} not in {self}")
+    
+    # endregion DataMapping override for Node ####
 
     # region DataMapping ####
     def __init_subclass__(cls, **kwargs):
@@ -1413,17 +1579,22 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         add hook to some methods
         '''
         ### __init__ ###
+        cls._orig_init = cls.__init__
         cls.__init__ = method_exit_hook_decorator(cls, cls.__init__, cls.try_open, cls.has_not_inited)
         ### clear ###
         cls.clear = method_exit_hook_decorator(cls, cls.clear, cls._clear_empty_dir)
         super().__init_subclass__(**kwargs)
 
-    def __init__(self, top_directory:Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs) -> None:
+    def __init__(self, top_directory:Union[str, "DatasetNode"], mapping_name: str = "", *args, flag_name:str = "", **kwargs) -> None:
         '''
-        Initialize the data cluster with the provided top_directory, name, and registration flag.
+        Initialize the data cluster with the provided top_directory, mapping_name, and registration flag.
         '''
         IOStatusManager.__init__(self)
+        Node.__init__(self)
         Generic.__init__(self)
+
+        self.set_parent(top_directory)
+
         self._MemoryData:dict[int, _VT] = self.load_postprocess({})
 
         self.cache_priority     = True
@@ -1433,10 +1604,10 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
 
         self.__unfinished_operation = 0
 
-        if self.parent_data_mapping is not None:
-            self._set_unfinished_operation(self.parent_data_mapping._get_unfinished_operation())
-        if self.mark_exist() and self._get_unfinished_operation() == 0:
-            self.choose_unfinished_operation()
+        if self.parent is not None:
+            self._set_unfinished_operation(self.parent._get_unfinished_operation())
+        # if self.mark_exist() and self._get_unfinished_operation() == 0:
+        #     self.choose_unfinished_operation()
 
     def try_open(self):
         if os.path.exists(self.data_path):
@@ -1445,8 +1616,8 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
             self.close()
         if DEBUG:
             print(f"{self.identity_string()} inited")
-        if self.mark_exist():
-            self.process_unfinished()
+        # if self.mark_exist():
+        #     self.process_unfinished()
         self._inited = True
 
     def has_not_inited(self):
@@ -1462,6 +1633,7 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
             for dir_ in d:
                 if len(os.listdir(os.path.join(r, dir_))) == 0:
                     os.rmdir(os.path.join(r, dir_))
+    
     @property
     def top_directory(self):
         return self._top_directory
@@ -1469,10 +1641,6 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     @top_directory.setter
     def top_directory(self, value):
         return None
-
-    @property
-    def parent_data_mapping(self) -> DMT:
-        raise NotImplementedError
 
     def make_path(self):
         if not os.path.exists(self.data_path):
@@ -1483,6 +1651,10 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
                     pass
             else:
                 os.makedirs(self.data_path)
+    
+    def set_parent(self, parent):
+        if isinstance(parent, DataMapping) or parent is None:
+            self._move_node(parent)
     # endregion DataMapping new methods ####
 
     # region DataMapping override for IOStatusManager####
@@ -1494,18 +1666,51 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     def stop_writing_hook(self):
         self.sort()
         self.save()
-        if self.parent_data_mapping is not None:
-            self.parent_data_mapping.save()
+        if self.parent is not None:
+            self.parent.save()
 
     def get_writing_mark_file(self):
-        return os.path.join(self.top_directory, self.mapping_name, self.WRITING_MARK)
+        # return os.path.join(self.top_directory, self.mapping_name, self.WRITING_MARK)
+        return os.path.join(self.top_directory, self.WRITING_MARK)
+
+    @Node.forward_propagate
+    def close(self, closed = True):
+        super().close(closed)    
+
+    @Node.forward_propagate
+    def open(self, opened = True):
+        super().open(opened)
+
+    @Node.forward_propagate
+    def set_readonly(self, readonly = True):
+        super().set_readonly(readonly)
+
+    @Node.forward_propagate
+    def set_writable(self, writable = True):
+        super().set_writable(writable)
+
+    @Node.forward_propagate
+    def stop_writing(self, stop_writing = True):
+        super().stop_writing(stop_writing)
+
+    @Node.forward_propagate
+    def start_writing(self, start_writing = True):
+        super().start_writing(start_writing)
+
+    @Node.forward_propagate
+    def set_overwrite_forbidden(self, overwrite_forbidden = True):
+        super().set_overwrite_forbidden(overwrite_forbidden)
+
+    @Node.forward_propagate
+    def set_overwrite_allowed(self, overwrite_allowed = True):
+        super().set_overwrite_allowed(overwrite_allowed)
+
     # endregion DataMapping override for IOStatusManager####
     
     # region Memorydata operation ####
+    @Node.backward_propagate
     def _set_MemoryData_modified(self):
         self._MemoryData_modified = True
-        if self.parent_data_mapping is not None:
-            self.parent_data_mapping._set_MemoryData_modified()
 
     def _reset_MemoryData_modified(self):
         self._MemoryData_modified = False
@@ -1520,11 +1725,13 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
     
     @property
     def MemoryData_path(self):
-        return os.path.join(self.top_directory, self.mapping_name, self.flag_name + self.MEMORY_DATA_FILE)
+        # return os.path.join(self.top_directory, self.mapping_name, self.flag_name + self.MEMORY_DATA_FILE)
+        return os.path.join(self.top_directory, self.flag_name + self.MEMORY_DATA_FILE)
     
     @property
     def data_path(self):
-        return os.path.join(self.top_directory, self.mapping_name).replace('\\', '/')
+        # return os.path.join(self.top_directory, self.mapping_name).replace('\\', '/')
+        return os.path.join(self.top_directory).replace('\\', '/')
 
     def save_preprecess(self):
         return self.MemoryData
@@ -2007,27 +2214,26 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     # region FilesCluster override ####
 
     # region - override new #
-    def __new__(cls, dataset_node:Union[str, "DatasetNode"], name: str = "", *args, flag_name = "", **kwargs):
-        return super().__new__(cls, dataset_node, name, *args, flag_name = flag_name, **kwargs)
+    # def __new__(cls, dataset_node:Union[str, "DatasetNode"], mapping_name: str = "", *args, flag_name = "", **kwargs):
+    #     return super().__new__(cls, dataset_node, mapping_name, *args, flag_name = flag_name, **kwargs)
 
-    def init_identity(self, dataset_node:Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs):
-        if isinstance(dataset_node, str):
-            self._dataset_node:DSNT = None # type: ignore 
-            self._top_directory = dataset_node
-        elif isinstance(dataset_node, DatasetNode):
-            self._dataset_node:DSNT = dataset_node # type: ignore
-        elif dataset_node is None:
-            self._dataset_node:DSNT = None
-            self._top_directory = ""
-        else:
-            raise TypeError(f"dataset_node must be str or DatasetNode, not {type(dataset_node)}")
-        self.mapping_name = name       
-        self.flag_name = flag_name 
+    # def init_identity(self, dataset_node:Union[str, "DatasetNode"], mapping_name: str, *args, flag_name = "", **kwargs):
+    #     if isinstance(dataset_node, str):
+    #         self._top_directory = dataset_node
+    #     elif isinstance(dataset_node, DatasetNode):
+    #         self._top_directory = os.path.join(dataset_node.data_path, name)
+    #         assert is_subpath(self._top_directory, dataset_node.top_directory), f"{self.top_directory} is not inside {dataset_node.top_directory}"
+    #     elif dataset_node is None:
+    #         self._top_directory = ""
+    #     else:
+    #         raise TypeError(f"dataset_node must be str or DatasetNode, not {type(dataset_node)}")
+    #     self.mapping_name = name       
+    #     self.flag_name = flag_name 
     # endregion - override new #
 
     # region - override methods #
-    def __init__(self, dataset_node: Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs) -> None:
-        super().__init__(dataset_node, name)
+    def __init__(self, dataset_node: Union[str, "DatasetNode"], mapping_name: str, *args, flag_name = "", **kwargs) -> None:
+        super().__init__(dataset_node, mapping_name)
 
         self.init_io_metas()
         self.init_attrs()
@@ -2037,48 +2243,45 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     def MemoryData(self) -> BinDict[int, FHT]:
         return self._MemoryData
 
-    @property
-    def top_directory(self) -> str:
-        if self._dataset_node is not None:
-            return self._dataset_node.top_directory
-        else:
-            return self._top_directory
+    # @property
+    # def top_directory(self) -> str:
+    #     if self._dataset_node is not None:
+    #         return self._dataset_node.top_directory
+    #     else:
+    #         return self._top_directory
 
-    @top_directory.setter
-    def top_directory(self, value):
-        return None
+    # @top_directory.setter
+    # def top_directory(self, value):
+    #     return None
     
-    @property
-    def parent_data_mapping(self):
-        return self.dataset_node
     # endregion - override methods #
 
     # endregion FilesCluster override ####
 
     # region FilesCluster new methods ####
     @property
-    def dataset_node(self):
-        return self._dataset_node
+    def dataset_node(self) -> "DatasetNode":
+        return self.parent
     
-    @dataset_node.setter
-    def dataset_node(self, dataset_node):
-        if self._dataset_node is not None:
-            self.unregister_from_dataset()
-        self._dataset_node = dataset_node
-        self.register_to_dataset()
+    # @dataset_node.setter
+    # def dataset_node(self, dataset_node:"DatasetNode"): #TODO
+    #     if self.parent is not None:
+    #         self.unregister_from_dataset()
+    #     self._dataset_node = dataset_node
+    #     self.register_to_dataset()
 
     @property
     def registerd(self):
-        return self._dataset_node is not None and \
-            self.identity_string() in self._dataset_node.clusters_map
+        return self.dataset_node is not None and \
+            self.identity_string() in self.dataset_node.clusters_map
 
-    def register_to_dataset(self):
-        if self._dataset_node is not None:
-            self._dataset_node.add_cluster(self)
+    # def register_to_dataset(self): #TODO
+    #     if self.dataset_node is not None:
+    #         self.dataset_node.add_cluster(self)
 
-    def unregister_from_dataset(self):
-        if self.identity_string() in self._dataset_node.clusters_map:
-            self._dataset_node.remove_cluster(self)
+    # def unregister_from_dataset(self): #TODO
+    #     if self.identity_string() in self.dataset_node.clusters_map:
+    #         self.dataset_node.remove_cluster(self)
 
     def get_rely_io_parameters(self):
         pass
@@ -2766,10 +2969,18 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
     # region create instance ####
     @classmethod
-    def from_cluster(cls:type[FCT], cluster:FCT, dataset_node:DSNT = None, name = None, *args, **kwargs) -> FCT:
+    def from_cluster(cls:type[FCT], cluster:FCT, dataset_node:DSNT = None, mapping_name = None, *args, flag_name = "",  **kwargs) -> FCT:
         dataset_node    = cluster.dataset_node if dataset_node is None else dataset_node
-        name            = cluster.mapping_name if name is None else name
-        new_cluster:FCT = cls(dataset_node, name)
+        mapping_name    = cluster.mapping_name if mapping_name is None else mapping_name
+        flag_name       = cluster.flag_name if flag_name == "" else flag_name
+
+        init_paras = get_function_args(cls._orig_init, "dataset_node", "mapping_name", "flag_name", "self")
+        para_dict = {}
+        for para_name in init_paras:
+            if hasattr(cluster, para_name):
+                para_dict[para_name] = cluster.__getattribute__(para_name)
+
+        new_cluster:FCT = cls(dataset_node, mapping_name, flag_name = flag_name, **para_dict)
         return new_cluster
     # endregion create instance ####
 
@@ -2782,76 +2993,80 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # region FilesCluster override ####
     
     # region - override new #
-    def init_identity(self, top_directory:str, *args, parent:"DatasetNode" = None, flag_name = "", **kwargs):
+    # def init_identity(self, top_directory:str, *args, parent:"DatasetNode" = None, flag_name = "", **kwargs):
 
-        self.__unfinished_operation = 0
-        if parent is not None:
-            self._top_directory = os.path.join(parent.data_path, top_directory)
-            assert is_subpath(self.top_directory, parent.top_directory), f"{self.top_directory} is not inside {parent.top_directory}"
-        else:
-            self._top_directory = top_directory
+    #     self.__unfinished_operation = 0
+    #     if parent is not None:
+    #         self._top_directory = os.path.join(parent.data_path, top_directory)
+    #         assert is_subpath(self.top_directory, parent.top_directory), f"{self.top_directory} is not inside {parent.top_directory}"
+    #     else:
+    #         self._top_directory = top_directory
 
-        self.mapping_name:str = "" # self.top_directory
-        self.flag_name = flag_name
+    #     self.mapping_name:str = "" # self.top_directory
+    #     self.flag_name = flag_name
     # endregion - override new #
 
     # region - override methods #
-    def __init__(self, directory, *, flag_name = "", parent:"DatasetNode" = None) -> None:
-        if parent is not None:
-            super().__init__(os.path.join(parent.data_path, directory), "", flag_name=flag_name)
-        else:
-            super().__init__(directory, "")
-        self.init_node_hook()
-        self.move_node(parent)
-        self.init_dataset_attr_hook()
+    def __init__(self, top_directory:Union[str, "DatasetNode"], mapping_name: str = "", *args, flag_name = "", **kwargs) -> None:
+        super().__init__(top_directory, mapping_name, *args, flag_name = flag_name,  **kwargs)
+        # if parent is not None:
+        #     super().__init__(os.path.join(parent.data_path, directory), "", flag_name=flag_name)
+        # else:
+        #     super().__init__(directory, "")
 
+        self.init_dataset_attr_hook()
+        
         self.clusters_map:dict[str, FCT] = dict()
+        self.child_nodes_map:dict[str, DatasetNode] = dict()
         self.init_clusters_hook()
 
     @property
     def MemoryData(self) -> Table[int, str, bool]:
         return self._MemoryData
 
-    @property
-    def parent_data_mapping(self):
-        return self.parent
-
-    def init_node_hook(self):
-        self.__parent:list[DatasetNode] = [None]
-        self.children:list[DatasetNode] = []
-
-        self.linked_with_children = True
-        self.follow_parent = True
-
     def init_dataset_attr_hook(self):
         os.makedirs(self.top_directory, exist_ok=True) 
         self._cluster_use_rely = False
         self.__unfinished_operation = 0
+        self.is_update_clusters = False
     # endregion - override methods #
 
     # endregion FilesCluster override ####
 
-    # region cluster_map ####
-    def add_cluster(self, cluster:FCT):
-        cluster._dataset_node = self
-        if cluster.identity_name() in self.clusters_map:
-            raise KeyError(f"{cluster.identity_name()} already exists")
+    # region maps ####
+
+    # region - map operation #
+    def __dsn_add_child(self, child:DataMapping, map:dict):
+        child.set_parent(self)
+        # unique check
+        if child.identity_name() in map and map[child.identity_name()] is not child:
+            raise KeyError(f"{child.identity_name()} already exists, but the child not the same as the new one")
         else:
-            self.clusters_map[cluster.identity_name()] = cluster
+            map[child.identity_name()] = child
+            self._add_child(child)
+        # open
         if self.opened:
-            cluster.open()
-            self.MemoryData.col_names
-        if cluster._IS_ELEM:
-            self.MemoryData.add_column(cluster.identity_name(), exist_ok=True)
+            child.open()
+        # add column
+        if isinstance(child, FilesCluster) and child._IS_ELEM:
+            self.MemoryData.add_column(child.identity_name(), exist_ok=True)
+
+    def __dsn_remove_child(self, child:DataMapping, map:dict):
+        if child.parent == self:
+            self._remove_child(child)
+            map.pop(child.identity_name())
+            self.MemoryData.remove_column(child.identity_name(), not_exist_ok=True)  
+    # endregion - map operation #
+   
+    # region - cluster_map ####
+    def add_cluster(self, cluster:FCT):
+        self.__dsn_add_child(cluster, self.clusters_map)
 
     def remove_cluster(self, cluster:FCT):
-        if cluster.dataset_node == self:
-            cluster.dataset_node = None
-            del self.clusters_map[cluster.identity_name()]
-            self.MemoryData.remove_column(cluster.identity_name(), not_exist_ok=True)
+        self.__dsn_remove_child(cluster, self.clusters_map)
 
-    def get_cluster(self, name:str):
-        return self.clusters_map[name]
+    def get_cluster(self, identity_name:str):
+        return self.clusters_map[identity_name]
 
     def cluster_keys(self):
         return self.clusters_map.keys()
@@ -2885,7 +3100,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
 
         for k in self.cluster_keys():
             if k in cluster_map:
-                raise NotImplementedError(f"the mapping name {k} is already in cluster_map")
+                raise NotImplementedError(f"the mapping_name {k} is already in cluster_map")
             cluster_map[k] = self.clusters_map[k]
 
         if self.linked_with_children:
@@ -2897,11 +3112,35 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
                     if v.opened:
                         cluster_map.pop(k)
 
-        for child in self.children:
-            cluster_map.update(child.get_all_clusters(_type, only_opened))
+        for child_node in self.child_nodes:
+            cluster_map.update(child_node.get_all_clusters(_type, only_opened))
 
         return cluster_map
     # endregion cluster_map END ####
+
+    # region - child_nodes_map ####
+    def add_child_node(self, child_node:"DatasetNode"):
+        self.__dsn_add_child(child_node, self.child_nodes_map)
+
+    def remove_child_node(self, child_node:"DatasetNode"):
+        self.__dsn_remove_child(child_node, self.child_nodes_map)
+
+    def get_child_node(self, identity_name:str):
+        return self.child_nodes_map[identity_name]
+    
+    def child_node_keys(self):
+        return self.child_nodes_map.keys()
+    
+    @property
+    def child_nodes(self) -> list["DatasetNode"]:
+        return list(self.child_nodes_map.values())
+    
+    @property
+    def child_node_num(self) -> int:
+        return len(self.child_nodes_map)
+    # endregion
+    
+    # endregion
 
     # region node and cluster operation #
     def operate_clusters(self, func:Union[Callable, str], *args, **kwargs):
@@ -2909,7 +3148,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             self.operate_one_cluster(obj, func, *args, **kwargs)
 
     def operate_children_node(self, func:Union[Callable, str], *args, **kwargs):
-        for child_node in self.children:
+        for child_node in self.child_nodes:
             self.operate_one_child_node(child_node, func, *args, **kwargs)
 
     def operate_one_cluster(self, cluster, func:Union[Callable, str], *args, **kwargs):
@@ -2920,46 +3159,46 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         func_name = func.__name__ if isinstance(func, Callable) else func
         if self.linked_with_children and child_node.follow_parent:
             child_node.__getattribute__(func_name)(*args, **kwargs)
+    
+    # def close_hook(self):
+    #     super().close_hook()
+    #     self.operate_clusters(FilesCluster.close)
+    #     self.operate_children_node(DatasetNode.close)
 
-    def open_hook(self):
-        super().open_hook()
-        self.operate_clusters(FilesCluster.open)
-        self.operate_children_node(DatasetNode.open)
+    # def open_hook(self):
+    #     super().open_hook()
+    #     self.operate_clusters(FilesCluster.open)
+    #     self.operate_children_node(DatasetNode.open)
 
-    def close_hook(self):
-        super().close_hook()
-        self.operate_clusters(FilesCluster.close)
-        self.operate_children_node(DatasetNode.close)
+    # def readonly_hook(self):
+    #     super().readonly_hook()
+    #     self.operate_clusters(FilesCluster.set_readonly)
+    #     self.operate_children_node(DatasetNode.set_readonly)
 
-    def readonly_hook(self):
-        super().readonly_hook()
-        self.operate_clusters(FilesCluster.set_readonly)
-        self.operate_children_node(DatasetNode.set_readonly)
+    # def writable_hook(self):
+    #     super().writable_hook()
+    #     self.operate_clusters(FilesCluster.set_writable)
+    #     self.operate_children_node(DatasetNode.set_writable)
 
-    def writable_hook(self):
-        super().writable_hook()
-        self.operate_clusters(FilesCluster.set_writable)
-        self.operate_children_node(DatasetNode.set_writable)
+    # def stop_writing_hook(self):
+    #     super().stop_writing_hook()
+    #     self.operate_clusters(FilesCluster.stop_writing)
+    #     self.operate_children_node(DatasetNode.stop_writing)
 
-    def stop_writing_hook(self):
-        super().stop_writing_hook()
-        self.operate_clusters(FilesCluster.stop_writing)
-        self.operate_children_node(DatasetNode.stop_writing)
+    # def start_writing_hook(self):
+    #     super().start_writing_hook()
+    #     self.operate_clusters(FilesCluster.start_writing)
+    #     self.operate_children_node(DatasetNode.start_writing)
 
-    def start_writing_hook(self):
-        super().start_writing_hook()
-        self.operate_clusters(FilesCluster.start_writing)
-        self.operate_children_node(DatasetNode.start_writing)
+    # def set_overwrite_allowed_hook(self):
+    #     super().set_overwrite_allowed_hook()
+    #     self.operate_clusters(FilesCluster.set_overwrite_allowed)
+    #     self.operate_children_node(DatasetNode.set_overwrite_allowed)
 
-    def set_overwrite_allowed_hook(self):
-        super().set_overwrite_allowed_hook()
-        self.operate_clusters(FilesCluster.set_overwrite_allowed)
-        self.operate_children_node(DatasetNode.set_overwrite_allowed)
-
-    def set_overwrite_forbidden_hook(self):
-        super().set_overwrite_forbidden_hook()
-        self.operate_clusters(FilesCluster.set_overwrite_forbidden)
-        self.operate_children_node(DatasetNode.set_overwrite_forbidden)
+    # def set_overwrite_forbidden_hook(self):
+    #     super().set_overwrite_forbidden_hook()
+    #     self.operate_clusters(FilesCluster.set_overwrite_forbidden)
+    #     self.operate_children_node(DatasetNode.set_overwrite_forbidden)
     # endregion node and cluster operation #
 
     # region clusters #####
@@ -2995,55 +3234,55 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
                 obj = self.__getattribute__(name)
                 if id(value) != id(obj):
                     if isinstance(obj, DatasetNode) and obj.parent == self:
-                        self.remove_child(obj)
+                        self._remove_child(obj)
                     elif isinstance(obj, FilesCluster) and obj.dataset_node == self:
                         self.remove_cluster(obj)
             # auto register     
             if isinstance(value, DatasetNode):
-                self.add_child(value)
+                self.add_child_node(value)
             elif isinstance(value, FilesCluster):
                 self.add_cluster(value)
         super().__setattr__(name, value)
     # endregion clusters #
 
-    # region node ###
-    @property
-    def children_names(self):
-        return [x.identity_name() for x in self.children]
+    # # region node ###
+    # @property
+    # def children_names(self):
+    #     return [x.identity_name() for x in self.children]
 
-    @property
-    def parent(self):
-        return self.__parent[0]
+    # @property
+    # def parent(self):
+    #     return self.__parent[0]
 
-    def _set_parent(self, parent):
-        self.__parent[0] = parent
+    # def _set_parent(self, parent):
+    #     self.__parent[0] = parent
 
-    def get_child(self, name):
-        for child in self.children:
-            if child.identity_name() == name:
-                return child
-        raise KeyError(f"{name} not in {self}")
+    # def get_child(self, name):
+    #     for child in self.children:
+    #         if child.identity_name() == name:
+    #             return child
+    #     raise KeyError(f"{name} not in {self}")
 
-    def add_child(self, child_node:"DatasetNode"):
-        assert isinstance(child_node, DatasetNode), f"child_node must be Node, not {type(child_node)}"
-        if child_node in self.children:
-            return
-        child_node._set_parent(self)
-        self.children.append(child_node)
+    # def add_child(self, child_node:"DatasetNode"):
+    #     assert isinstance(child_node, DatasetNode), f"child_node must be Node, not {type(child_node)}"
+    #     if child_node in self.children:
+    #         return
+    #     child_node._set_parent(self)
+    #     self.children.append(child_node)
 
-    def remove_child(self, child_node:"DatasetNode"):
-        assert isinstance(child_node, DatasetNode), f"child_node must be Node, not {type(child_node)}"
-        if child_node in self.children:
-            child_node._set_parent(None)
-            self.children.remove(child_node)
+    # def remove_child(self, child_node:"DatasetNode"):
+    #     assert isinstance(child_node, DatasetNode), f"child_node must be Node, not {type(child_node)}"
+    #     if child_node in self.children:
+    #         child_node._set_parent(None)
+    #         self.children.remove(child_node)
 
-    def move_node(self, new_parent:"DatasetNode"):
-        assert isinstance(new_parent, DatasetNode) or new_parent is None, f"new_parent must be DatasetNode, not {type(new_parent)}"
-        if self.parent is not None:
-            self.parent.remove_child(self)
-        if new_parent is not None:
-            new_parent.add_child(self)
-    # endregion node ###
+    # def _move_node(self, new_parent:"DatasetNode"):
+    #     assert isinstance(new_parent, DatasetNode) or new_parent is None, f"new_parent must be DatasetNode, not {type(new_parent)}"
+    #     if self.parent is not None:
+    #         self.parent.remove_child(self)
+    #     if new_parent is not None:
+    #         new_parent.add_child(self)
+    # # endregion node ###
 
     # region io ###
     @cluster_use_rely_decorator
@@ -3058,6 +3297,10 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     @cluster_use_rely_decorator
     def raw_write(self, dst, values:dict[str, Any], *, force = False, **other_paras) -> None:
         assert len(values) == len(self.elem_clusters), f"the length of values {len(values)} != the length of clusters {len(self.elem_clusters)}"
+        if isinstance(values, (list, tuple)):
+            # cvt to dict
+            warnings.warn("the values is list or tuple and has been converted to dict, but a dict is recommended")
+            values = {self.elem_clusters[i].identity_name(): values[i] for i in range(len(values))}
         with self.get_writer(force).allow_overwriting():
             for obj in self.elem_clusters:
                 obj.write(dst, values[obj.identity_name()], **other_paras)
@@ -3087,14 +3330,14 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             # add clusters
             for cluster_name in src_dataset_node.cluster_keys():
                 src_cluster = src_dataset_node.clusters_map[cluster_name]
-                self.add_cluster(src_cluster.__class__.from_cluster(src_cluster, dataset_node=self))
+                self.add_cluster(src_cluster.__class__.from_cluster(src_cluster, self))
 
         with self.get_writer(force).allow_overwriting():  
             for cluster_name in self.cluster_keys():
                 this_cluster = self.clusters_map[cluster_name]
                 src_cluster = src_dataset_node.clusters_map[cluster_name]
                 self.operate_one_cluster(this_cluster, FilesCluster.merge_from, src_cluster)
-            for this_child_node in self.children:
+            for this_child_node in self.child_nodes:
                 src_child_node = src_dataset_node.get_child(this_child_node.identity_name())
                 self.operate_one_child_node(this_child_node, DatasetNode.merge_from, src_child_node)
 
@@ -3128,25 +3371,42 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # endregion cache operation ######
 
     # region Memorydata operation ####
+    @Node.forward_propagate
     def update_overview(self, log_type, src, dst, value, cluster:FilesCluster):
         col_name = cluster.identity_name()
+        is_child = cluster in self.clusters
         if log_type == self.LOG_READ or\
         log_type == self.LOG_CHANGE or\
         log_type == self.LOG_OPERATION:
             return
         if log_type == self.LOG_ADD:
             self.MemoryData.add_row(dst, exist_ok=True)
-            self.MemoryData[dst, col_name] = True
+            if is_child:
+                self.MemoryData[dst, col_name] = True
         if log_type == self.LOG_REMOVE:
             if dst in self.MemoryData:
-                self.MemoryData[dst, col_name] = False
-                self.clear_empty_row(dst)
-        if log_type == self.LOG_MOVE:
-            self.MemoryData.add_row(dst, exist_ok=True)
-            self.MemoryData[dst, col_name] = True
-            self.MemoryData[src, col_name] = False
-            self.clear_empty_row(src)
+                if is_child:
+                    self.MemoryData[dst, col_name] = False
+                if self._clear_empty_row(dst):
+                    self.operate_children_node(DatasetNode._clear_empty_row, dst, force=True)
 
+        if log_type == self.LOG_MOVE:
+            self.MemoryData.add_row(dst, exist_ok=True) 
+            if is_child:
+                self.MemoryData[dst, col_name] = True
+                self.MemoryData[src, col_name] = False
+            if self._clear_empty_row(src):
+                self.operate_children_node(DatasetNode._move_row, src, dst)
+
+        if not is_child and not self.is_update_clusters:
+            self.is_update_clusters = True
+            self.update_clusters(log_type, src, dst, value, cluster)
+            self.is_update_clusters = False
+
+    def update_clusters(self, log_type, src, dst, value, cluster):
+        raise NotImplementedError
+
+    @Node.forward_propagate
     def rebuild(self):
         if len(self.elem_clusters) > 0:
             rows = [x for x in range(self.i_upper)]
@@ -3176,19 +3436,28 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         for cluster in self.elem_clusters:
             self.MemoryData[data_i, cluster.identity_name()] = cluster.has(data_i)
 
-    def clear_empty_row(self, data_i:int):
-        if not any(self.MemoryData[data_i].values()):
-            self.MemoryData.remove_row(data_i)
+    def _clear_empty_row(self, data_i:int, force = False):
+        if data_i in self.MemoryData and (not any(self.MemoryData[data_i].values()) or force):
+            self.MemoryData.remove_row(data_i, not_exist_ok=True)
+            return True
+        else:
+            return False
+        
+    def _move_row(self, src, dst):
+        self.MemoryData.add_row(dst, exist_ok=True)
+        self.MemoryData.set_row(dst, self.MemoryData.get_row(src))
+        self.MemoryData.remove_row(src, not_exist_ok=True)
             
-    def rebuild_all(self):
-        self.rebuild()
-        self.operate_clusters(FilesCluster.rebuild)
-        self.operate_children_node(DatasetNode.rebuild_all)
 
-    def save_all(self, force = False):
-        self.save(force=force)
-        self.operate_clusters(FilesCluster.save, force=force)
-        self.operate_children_node(DatasetNode.save_all, force=force)
+    # def rebuild_all(self):
+    #     self.rebuild()
+    #     self.operate_clusters(FilesCluster.rebuild)
+    #     self.operate_children_node(DatasetNode.rebuild_all)
+
+    # def save_all(self, force = False):
+    #     self.save(force=force)
+    #     self.operate_clusters(FilesCluster.save, force=force)
+    #     self.operate_children_node(DatasetNode.save_all, force=force)
     # endregion Memorydata operation ####
 
     # # region 
@@ -3197,3 +3466,4 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     #     self.operate_clusters(FilesCluster._set_unfinished_operation, unfinished_operation)
     #     self.operate_children_node(DatasetNode._set_unfinished_operation, unfinished_operation)
     # # endregion
+
