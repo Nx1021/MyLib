@@ -17,6 +17,7 @@ import time
 from tqdm import tqdm
 import types
 import warnings
+import copy
 
 from abc import ABC, abstractmethod
 from typing import Any, Union, Callable, TypeVar, Generic, Iterable, Generator
@@ -143,7 +144,7 @@ class Dataset(DatasetNode[FCT, DST, VDST], Generic[FCT, DST, VDST]):
 
     def init_clusters_hook(self):
         super().init_clusters_hook()
-        self.spliter_group = SpliterGroup("split_group", parent=self, split_paras=self.SPLIT_PARA)
+        self.spliter_group = SpliterGroup("split_group", parent=self, split_paras=copy.deepcopy(self.SPLIT_PARA))
 
     @property
     def split_mode(self):
@@ -183,9 +184,9 @@ class Dataset(DatasetNode[FCT, DST, VDST], Generic[FCT, DST, VDST]):
            log_type == self.LOG_CHANGE or\
            log_type == self.LOG_OPERATION:
             return
-        if log_type == self.LOG_ADD:
+        if log_type == self.LOG_ADD and dst not in self.spliter_group.keys():
             self.spliter_group.add_elem(dst)
-        if log_type == self.LOG_REMOVE:
+        if log_type == self.LOG_REMOVE and dst in self.spliter_group.keys():
             if dst not in self.keys():
                 self.spliter_group.remove_elem(dst)
         if log_type == self.LOG_MOVE:

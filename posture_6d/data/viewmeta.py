@@ -637,6 +637,7 @@ class ViewMeta():
             ViewMeta.VISIB_FRACTS: self.visib_fracts,
             ViewMeta.LABELS: self.labels
         }
+        return dict_
 
     def plot(self):
         '''

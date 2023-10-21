@@ -33,7 +33,8 @@ from .IOAbstract import DataMapping, DatasetNode, IOMeta, BinDict, _KT, _VT, DMT
     AmbiguousError, IOMetaParameterError, KeyNotFoundError, ClusterDataIOError, DataMapExistError, \
         IOStatusWarning, ClusterIONotExecutedWarning, ClusterNotRecommendWarning,\
     FilesCluster,\
-    parse_kw
+    parse_kw, get_with_priority
+from ..core.utils import JsonIO, deserialize_object, serialize_object, rebind_methods
 
 FHT = TypeVar('FHT', bound=FilesHandle) # type of the files handle
 UFC = TypeVar('UFC', bound="UnifiedFileCluster") # type of the unified file cluster
@@ -88,7 +89,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         assert suffix is not None, "suffix must be specified"
         self.suffix = suffix
         
-        read_func, write_func, value_type = FilesHandle.try_get_default(suffix, read_func, write_func, value_type)
+        read_func, write_func, value_type = self.try_get_default(suffix, read_func, write_func, value_type)
         self.read_func = read_func if read_func is not None else self.DEFAULT_READ_FUNC
         self.write_func = write_func if write_func is not None else self.DEFAULT_WRITE_FUNC
         self.value_type = value_type if value_type is not None else self.DEFAULT_VALUE_TYPE
@@ -135,6 +136,25 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         for suffix in self.alternate_suffix + [self.suffix]:
             paths.extend(glob.glob(os.path.join(self.data_path, "**/*" + suffix), recursive=True))
         return paths
+    
+    @classmethod
+    def try_get_default(cls, file:str,
+                            read_func:Callable = None, 
+                            write_func:Callable = None, 
+                            value_type:Callable = None):
+        if file.startswith('.'):
+            suffix = file
+        else:
+            suffix = os.path.splitext(file)[1]
+        if suffix in cls.FILESHANDLE_TYPE.DEFAULT_FILE_TYPE:
+            _read_func, _write_func, _value_type = cls.FILESHANDLE_TYPE.DEFAULT_FILE_TYPE[suffix]
+            read_func =  get_with_priority(read_func,  cls.DEFAULT_READ_FUNC,  cls.FILESHANDLE_TYPE.DEFAULT_READ_FUNC,   _read_func)
+            write_func = get_with_priority(write_func, cls.DEFAULT_WRITE_FUNC, cls.FILESHANDLE_TYPE.DEFAULT_WRITE_FUNC, _write_func)
+            value_type = get_with_priority(value_type, cls.DEFAULT_VALUE_TYPE, cls.FILESHANDLE_TYPE.DEFAULT_VALUE_TYPE, _value_type)
+        # else:
+        #     warnings.warn(f"can't find default file type for {suffix}", ClusterNotRecommendWarning)
+
+        return read_func, write_func, value_type
         
     ############################
     _FCT = TypeVar('_FCT', bound="UnifiedFileCluster")
@@ -188,6 +208,14 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
     
     def append(self, value: VDMT, *, sub_dir = "", force=False, **other_paras):
         return super().append(value, sub_dir = sub_dir, force = force,  **other_paras)
+    
+    def copy_from(self, src:UFC, *, cover=False, force=False, only_cache = None, **other_paras):
+        if only_cache is None:
+            # decide whether to copy cache by the size of the files
+            sizes = [os.path.getsize(fh.get_path()) for fh in src.query_all_fileshandle()] # TODO
+            mean_size = sum(sizes) / len(sizes)
+            only_cache = mean_size > 1e5
+        return super().copy_from(src, cover=cover, force=force, **other_paras)
     #####################
 
     #######################
@@ -848,8 +876,8 @@ class NdarrayAsTxtCluster(UnifiedFileCluster[UFH, NDAC, DSNT, VNDAC], Generic[UF
                          **kwargs)
         self.array_shape:tuple[int]     = array_shape if array_shape is not None else (-1,)
 
-        self.read_meta.inv_format_value = self.read_inv_format
-        self.write_meta.format_value = self.write_format
+        rebind_methods(self.read_meta, self.read_meta.inv_format_value, self.read_inv_format)
+        rebind_methods(self.write_meta, self.write_meta.format_value, self.write_format)
 
     @staticmethod
     def read_inv_format(self:IOMeta["NdarrayAsTxtCluster", np.ndarray, UnifiedFilesHandle], array:np.ndarray):
@@ -861,13 +889,17 @@ class NdarrayAsTxtCluster(UnifiedFileCluster[UFH, NDAC, DSNT, VNDAC], Generic[UF
     
     @staticmethod
     def write_format(self:IOMeta, value:np.ndarray) -> Any:
-        array = value.reshape((value.shape[0], -1))
+        array = np.array(value)
+        if len(array.shape) == 0:
+            array = array.reshape((1, 1))
+        array = array.reshape((array.shape[0], -1))
         return array
 
-class IntArrayDictAsTxtCluster(NdarrayAsTxtCluster[UFH, INDADC, DSNT], Generic[UFH, INDADC, DSNT]):
+IntArrayDict = dict[int, np.ndarray]
+class IntArrayDictAsTxtCluster(NdarrayAsTxtCluster[UFH, INDADC, DSNT, IntArrayDict], Generic[UFH, INDADC, DSNT]):
 
     @staticmethod
-    def read_inv_format(self:IOMeta["IntArrayDictAsTxtCluster", dict[int, np.ndarray], UnifiedFilesHandle], array:np.ndarray):
+    def read_inv_format(self:IOMeta["IntArrayDictAsTxtCluster", IntArrayDict, UnifiedFilesHandle], array:np.ndarray):
         '''
         array: np.ndarray [N, 5]
         '''
@@ -877,7 +909,7 @@ class IntArrayDictAsTxtCluster(NdarrayAsTxtCluster[UFH, INDADC, DSNT], Generic[U
         return dict_
     
     @staticmethod
-    def write_format(self:IOMeta["IntArrayDictAsTxtCluster", dict[int, np.ndarray], UnifiedFilesHandle], value:dict[int, np.ndarray]) -> Any:
+    def write_format(self:IOMeta["IntArrayDictAsTxtCluster", IntArrayDict, UnifiedFilesHandle], value:IntArrayDict) -> Any:
         array = []
         for i, (k, v) in enumerate(value.items()):
             array.append(

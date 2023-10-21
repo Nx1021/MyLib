@@ -10,7 +10,7 @@ from functools import partial
 
 from . import RGB_DIR, DEPTH_DIR, TRANS_DIR, ARUCO_FLOOR, FRAMETYPE_DATA
 from . import DatasetNode, UnifiedFileCluster, DisunifiedFileCluster, DictLikeCluster, UnifiedFilesHandle, DisunifiedFilesHandle, DictLikeHandle, JsonIO, Dataset, DictFile, FilesCluster
-from ..data.dataCluster import FHT, UFC, DFC, DLC, UFH, DFH, DLFH, VDMT, IADC 
+from ..data.dataCluster import FHT, UFC, DFC, DLC, UFH, DFH, DLFH, VDMT 
 
 VDMT = TypeVar("VDMT", bound=Any)
 
@@ -342,7 +342,7 @@ class ModelManager(CommonData):
         self.extracted_mesh = EnumElements(self, "extracted_mesh", suffix='.ply',
                                         read_func=o3d.io.read_triangle_mesh,
                                         write_func=o3d.io.write_triangle_mesh)
-        self.icp_trans      = EnumElements(self, "icp_trans", suffix='.ply',
+        self.icp_trans      = EnumElements(self, "icp_trans", suffix='.npy',
                                         read_func=np.load,
                                         write_func=np.save)
         self.icp_std_mesh   = EnumElements(self, "icp_std_mesh", suffix='.ply',

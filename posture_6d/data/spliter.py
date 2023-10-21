@@ -341,8 +341,8 @@ class SpliterGroup(DatasetNode[Spliter, SPG, Table[int, str, bool]], Generic[SP,
 
     def init_clusters_hook(self):
         super().init_clusters_hook()
-        for split_mode in self.__split_paras:
-            self.add_cluster(Spliter(self, split_mode))
+        for split_mode, subsets in self.__split_paras.items():
+            self.add_cluster(Spliter(self, split_mode, subsets = subsets))
     
     def init_dataset_attr_hook(self):
         super().init_dataset_attr_hook()

@@ -109,6 +109,12 @@ def parse_kw(**kwargs) -> list[dict[str, Any]]:
 def is_subpath(child_path, parent_path):
     relative_path:str = os.path.relpath(child_path, parent_path)
     return not relative_path.startswith('..')
+
+def get_with_priority(*args):
+    assert len(args) > 0, "at least one parameter is needed"
+    for arg in args:
+        if arg is not None:
+            return arg
 # endregion functions ###
 
 class IOStatusManager():
@@ -459,17 +465,13 @@ class _RegisterInstance(ABC, Generic[RGSITEM]):
         self._identity_paras_locked = lock  
     # endregion _RegisterInstance ###
 
-    # region __getattr__ __setattr__###
-    def __getattr__(self, name):
-        if name == "_identity_paras_locked":
-            return False
-        raise AttributeError(f"has not attribute {name}")
-
+    # region __setattr__###
     def __setattr__(self, name: str, value) -> Any:
-        if self._identity_paras_locked and name in self.INDENTITY_PARA_NAMES:
+        _identity_paras_locked = self._identity_paras_locked if hasattr(self, "_identity_paras_locked") else False 
+        if _identity_paras_locked and name in self.INDENTITY_PARA_NAMES:
             raise AttributeError(f"cannot set {name}")
         super().__setattr__(name, value)
-    # endregion  __getattr__ __setattr__###
+    # endregion __setattr__###
 
 class _Prefix(dict[str, str]):
     KW_PREFIX = "prefix"
@@ -938,14 +940,6 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                             read_func:Callable = None, 
                             write_func:Callable = None, 
                             value_type:Callable = None):
-        def get_with_priority(parameter, cls_default, public_default):
-            if parameter is not None:
-                return parameter
-            elif cls_default is not None:
-                return cls_default
-            else:
-                return public_default
-        
         if file.startswith('.'):
             suffix = file
         else:
@@ -973,7 +967,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                   _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None): #type: ignore
         datapath = cluster.data_path
         if isinstance(path, str):
-            assert is_subpath(datapath, path), "cannot create a fileshandle object which is not in the data_path"
+            assert is_subpath(path, datapath), "cannot create a fileshandle object which is not in the data_path"
             filename = os.path.relpath(path, datapath)
         else:
             assert len(path) > 0, f"path must be a str or a list of str"
@@ -1408,7 +1402,6 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         '''
         principle: the parameter of identity can not be changed once it has been inited
         '''
-        self._unfinished_operation = 0
         self._top_directory = top_directory
         self.mapping_name = name  
         self.flag_name = flag_name         
@@ -1438,6 +1431,13 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
         self.write_synchronous  = False
         self._MemoryData_modified = True
 
+        self.__unfinished_operation = 0
+
+        if self.parent_data_mapping is not None:
+            self._set_unfinished_operation(self.parent_data_mapping._get_unfinished_operation())
+        if self.mark_exist() and self._get_unfinished_operation() == 0:
+            self.choose_unfinished_operation()
+
     def try_open(self):
         if os.path.exists(self.data_path):
             self.open()  # Opens the cluster for operation.
@@ -1445,6 +1445,8 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
             self.close()
         if DEBUG:
             print(f"{self.identity_string()} inited")
+        if self.mark_exist():
+            self.process_unfinished()
         self._inited = True
 
     def has_not_inited(self):
@@ -1676,59 +1678,58 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], ABC, Generi
 
     # endregion####
 
-    # region TODO ####
-    # def choose_unfinished_operation(obj):
-    #     '''
-    #         0. skip
-    #         1. clear the unfinished data
-    #         2. try to rollback the unfinished data
-    #         3. exit"))
-    #     '''
-    #     choice = int(input(f"please choose an operation to continue:\n\
-    #                 0. \n\
-    #                 1. clear the unfinished data\n\
-    #                 2. try to rollback the unfinished data\n\
-    #                 3. ignore\n"))
-    #     if choice not in [0, 1, 2, 3]:
-    #         raise ValueError(f"invalid choice {choice}")
-    #     return choice
+    # region process_unfinished ####
+    def _set_unfinished_operation(self, unfinished_operation):
+        self.__unfinished_operation = unfinished_operation
 
-    ### def process_unfinished(self):
-    #     
-    #     if self._unfinished:
-    #         if self._unfinished_operation == 0:
-    #             self._unfinished_operation = self.choose_unfinished_operation()
-    #         if self._unfinished_operation == 0:
-    #             return False
-    #         self.rebuild()
-    #         if self._unfinished_operation == 1:
-    #             self.clear(force=True, ignore_warning=True)
-    #             self._unfinished = False
-    #             self.remove_mark()
-    #             self.rebuild()
-    #             return True
-    #         elif self._unfinished_operation == 2:
-    #             # try roll back
-    #             log = self.load_from_mark_file()
-    #             with self.writer.allow_overwriting():
-    #                 for log_i, data_i, _ in log:
-    #                     if log_i == self.LOG_APPEND:
-    #                         if data_i in self.keys():
-    #                             self.remove(data_i)
-    #                             print(f"try to rollback, {data_i} in {self.identity_string()} is removed.")
-    #                     else:
-    #                         raise ValueError("can not rollback")
-    #             self.remove_mark()
-    #             return True
-    #         elif self._unfinished_operation == 3:
-    #             # reinit
-    #             self.remove_mark()
-    #             self.rebuild()
-    #         else:
-    #             raise ValueError(f"invalid operation {self._unfinished_operation}")
-    #     if self._unfinished_operation == 3:
-    #         # reinit
-    #         self.rebuild()
+    def _get_unfinished_operation(self):
+        return self.__unfinished_operation
+
+    def choose_unfinished_operation(self):
+        '''
+            0. skip
+            1. clear the unfinished data
+            2. try to rollback the unfinished data
+            3. exit"))
+        '''
+        choice = int(input(f"please choose an operation to continue:\n\
+                    0. \n\
+                    1. clear the unfinished data\n\
+                    2. try to rollback the unfinished data\n\
+                    3. ignore\n"))
+        if choice not in [0, 1, 2, 3]:
+            raise ValueError(f"invalid choice {choice}")
+        self._set_unfinished_operation(choice)
+        return choice
+
+    def process_unfinished(self):    
+        if self._get_unfinished_operation() == 0:
+            self.choose_unfinished_operation()
+        if self._get_unfinished_operation() == 0:
+            pass
+        elif self._get_unfinished_operation() == 1:
+            self.clear(force=True)
+            self.remove_mark()
+            return True
+        elif self._get_unfinished_operation() == 2:
+            # try roll back
+            self.rebuild()
+            log = self.load_from_mark_file()
+            with self.get_writer().allow_overwriting():
+                for log_i, data_i, _ in log:
+                    if log_i == self.LOG_ADD and data_i in self.keys():
+                        self.remove(data_i)
+                        print(f"try to rollback, {data_i} in {self.identity_string()} is removed.")
+                    else:
+                        raise ValueError("can not rollback")
+            self.remove_mark()
+            return True
+        elif self._get_unfinished_operation() == 3:
+            # reinit
+            self.rebuild()
+        else:
+            raise ValueError(f"invalid operation {self._get_unfinished_operation()}")
+        self.remove_mark()
     # endregion TODO ####
 
     def __repr__(self):
@@ -2011,14 +2012,11 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
     def init_identity(self, dataset_node:Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs):
         if isinstance(dataset_node, str):
-            self._unfinished_operation = 0
             self._dataset_node:DSNT = None # type: ignore 
             self._top_directory = dataset_node
         elif isinstance(dataset_node, DatasetNode):
-            self._unfinished_operation = dataset_node._unfinished_operation
             self._dataset_node:DSNT = dataset_node # type: ignore
         elif dataset_node is None:
-            self._unfinished_operation = 0
             self._dataset_node:DSNT = None
             self._top_directory = ""
         else:
@@ -2030,9 +2028,6 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     # region - override methods #
     def __init__(self, dataset_node: Union[str, "DatasetNode"], name: str, *args, flag_name = "", **kwargs) -> None:
         super().__init__(dataset_node, name)
-
-        self._unfinished = self.mark_exist()
-        self._unfinished_operation = 0
 
         self.init_io_metas()
         self.init_attrs()
@@ -2161,7 +2156,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         '''
         pass
 
-    def get_rely(self, mode):
+    def get_rely(self):
         rlt = self._relied_paras.copy()
         self._relied_paras.clear()
         return rlt
@@ -2675,14 +2670,15 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             return self.data_i_upper
 
     def read(self, src:int, *, force = False, **other_paras) -> VDMT:
-        read_rely_paras = self.get_rely('r')
+        read_rely_paras = self.get_rely()
         other_paras.update(read_rely_paras)
         rlt = self._switch_io_operation(self.read_data, self.read_elem)(src = src, force = force, **other_paras)
-        self.send_rely(rlt, 'r')
+        self.send_rely(rlt)
+        return rlt
 
     def write(self, dst:int, value:VDMT, *, force = False, **other_paras) -> None:
-        self.send_rely(value, 'w')
-        write_rely_paras = self.get_rely('w')
+        self.send_rely(value)
+        write_rely_paras = self.get_rely()
         other_paras.update(write_rely_paras)
         return self._switch_io_operation(self.write_data, self.write_elem)(dst = dst, value = value, force = force, **other_paras)
         
@@ -2788,7 +2784,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # region - override new #
     def init_identity(self, top_directory:str, *args, parent:"DatasetNode" = None, flag_name = "", **kwargs):
 
-        self._unfinished_operation = 0
+        self.__unfinished_operation = 0
         if parent is not None:
             self._top_directory = os.path.join(parent.data_path, top_directory)
             assert is_subpath(self.top_directory, parent.top_directory), f"{self.top_directory} is not inside {parent.top_directory}"
@@ -2830,7 +2826,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     def init_dataset_attr_hook(self):
         os.makedirs(self.top_directory, exist_ok=True) 
         self._cluster_use_rely = False
-        self._unfinished_operation = 0
+        self.__unfinished_operation = 0
     # endregion - override methods #
 
     # endregion FilesCluster override ####
@@ -2978,29 +2974,16 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             for cluster in self.clusters:
                 cluster._relied_paras.clear()
 
-    @staticmethod
     def cluster_use_rely_decorator(func):
-        def wrapper(self:DatasetNode, *args, **kwargs):
+        def cluster_use_rely_decorator_wrapper(self:"DatasetNode", *args, **kwargs):
             self.cluster_use_rely = True
             rlt = func(self, *args, **kwargs)
             self.cluster_use_rely = False
             return rlt
-        return wrapper
+        return cluster_use_rely_decorator_wrapper
 
     def init_clusters_hook(self):
         pass
-        # unfinished = self.mark_exist()
-        # if unfinished:
-        #     y:int = FilesCluster.choose_unfinished_operation(self)
-        #     self._unfinished_operation = y        
-
-        # self._init_clusters()
-        # self.update_dataset()        
-
-        # self.load_overview()        
-        # if unfinished:
-        #     self.process_unfinished()
-        #     os.remove(self.get_writing_mark_file())
 
     def __setattr__(self, name, value):
         ### 赋值DataMapping对象时，自动注册
@@ -3074,7 +3057,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     
     @cluster_use_rely_decorator
     def raw_write(self, dst, values:dict[str, Any], *, force = False, **other_paras) -> None:
-        assert len(values) == len(self.elem_clusters)
+        assert len(values) == len(self.elem_clusters), f"the length of values {len(values)} != the length of clusters {len(self.elem_clusters)}"
         with self.get_writer(force).allow_overwriting():
             for obj in self.elem_clusters:
                 obj.write(dst, values[obj.identity_name()], **other_paras)
@@ -3208,3 +3191,9 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         self.operate_children_node(DatasetNode.save_all, force=force)
     # endregion Memorydata operation ####
 
+    # # region 
+    # def _set_unfinished_operation(self, unfinished_operation):
+    #     super()._set_unfinished_operation(unfinished_operation)
+    #     self.operate_clusters(FilesCluster._set_unfinished_operation, unfinished_operation)
+    #     self.operate_children_node(DatasetNode._set_unfinished_operation, unfinished_operation)
+    # # endregion

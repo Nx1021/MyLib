@@ -93,39 +93,6 @@ def is_image(array):
         return False
     return True
 
-def serialize_image_container(image_container):
-    def serialize_image(image:np.ndarray):  
-        # 将NumPy数组编码为png格式的图像
-        retval, buffer = cv2.imencode('.png', image)
-        # 将图像数据转换为字节字符串
-        image_bytes = buffer.tobytes()
-        image.tobytes()
-        return image_bytes
-    if is_image(image_container):
-        return serialize_image(image_container)
-    elif isinstance(image_container, (list, tuple)):
-        new_value = [serialize_image_container(item) for item in image_container]
-    elif isinstance(image_container, dict):
-        new_value = dict(zip(image_container.keys(), [serialize_image(x) for x in image_container.values()]))
-    else:
-        return image_container
-    return new_value
-
-def deserialize_image_container(bytes_container, imread_flags):
-    def deserialize_image(image_bytes):  
-        image_array = np.frombuffer(image_bytes, dtype=np.uint8)
-        image = cv2.imdecode(image_array, flags=imread_flags)# 将numpy数组解码为图像
-        return image
-    if isinstance(bytes_container, bytes):
-        return deserialize_image(bytes_container)
-    elif isinstance(bytes_container, (list, tuple)):
-        new_value = [deserialize_image(item) for item in bytes_container]
-    elif isinstance(bytes_container, dict):
-        new_value = dict(zip(bytes_container.keys(), [deserialize_image(x) for x in bytes_container.values()]))
-    else:
-        return bytes_container
-    return new_value
-
 def test_pickleable(obj):
     temp_path = "./__pickle_test__.temp"
     try:
@@ -837,3 +804,19 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
     def save(self, path):
         JsonIO.dump_json(path, self.to_dict())
 
+def rebind_methods(obj, method_name:Union[str, Callable], new_func:Callable):
+    if isinstance(method_name, Callable):
+        # search for the method name
+        found = False
+        for name in dir(obj):
+            if getattr(obj, name) == method_name:
+                method_name = name
+                found = True
+                break
+        if not found:
+            raise ValueError(f"method {method_name} not found")
+    else:
+        # check if the method exists
+        assert hasattr(obj, method_name), f"method {method_name} not found"
+    assert isinstance(method_name, str), f"method {method_name} not found"
+    setattr(obj, method_name, types.MethodType(new_func, obj))

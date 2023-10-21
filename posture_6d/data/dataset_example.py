@@ -1,12 +1,11 @@
 from typing import Callable
 
-from posture_6d.data.IOAbstract import FilesCluster
 from .dataset import Dataset, DatasetNode, Mix_Dataset
 from .dataCluster import UnifiedFileCluster, DisunifiedFileCluster, DictLikeCluster, UnifiedFilesHandle, DisunifiedFilesHandle, DictLikeHandle,\
     IntArrayDictAsTxtCluster, NdarrayAsTxtCluster
-from .IOAbstract import ClusterWarning
+from .IOAbstract import ClusterWarning, FilesCluster
 from .viewmeta import ViewMeta
-from ..core.utils import deserialize_image_container, serialize_image_container, deserialize_object, serialize_object
+from ..core.utils import deserialize_object, serialize_object, rebind_methods
 
 import numpy as np
 import cv2
@@ -25,7 +24,7 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
         self.default_image_size = None
     
     class _read(IntArrayDictAsTxtCluster._read["cxcywhLabelCluster", dict[int, np.ndarray], UnifiedFilesHandle]):
-        def postprogress_value(self, value:np.ndarray, *, image_size = None):
+        def postprogress_value(self, value:np.ndarray, *, image_size = None, **other_paras):
             value = super().postprogress_value(value)
             image_size = self.files_cluster.default_image_size if image_size is None else image_size
             if image_size is not None:
@@ -39,20 +38,21 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
             return value
         
     class _write(IntArrayDictAsTxtCluster._write["cxcywhLabelCluster", dict[int, np.ndarray], UnifiedFilesHandle]):
-        def preprogress_value(self, value:np.ndarray, *, image_size = None):
+        def preprogress_value(self, value:dict[int, np.ndarray], *, image_size = None, **other_paras):
             value = super().preprogress_value(value)
             image_size = self.files_cluster.default_image_size if image_size is None else image_size
             if image_size is not None:
-                bbox_2d = value[:,1:].astype(np.float32)
-                bbox_2d = cxcywhLabelCluster._x1y1x2y2_2_normedcxcywh(bbox_2d, image_size)
-                value[:,1:] = bbox_2d
+                bbox_2d = {}
+                for k, v in value.items():
+                    bbox_2d[k] = cxcywhLabelCluster._x1y1x2y2_2_normedcxcywh(v, image_size)
+                value = bbox_2d
             else:
                 if image_size != self.files_cluster.KW_IO_RAW:
                     warnings.warn("image_size is None, bbox_2d will not be converted from x1x2y1y2 to normed cxcywh",
                     ClusterWarning)
             return value
 
-    def set_rely(self, relied: FilesCluster, rlt, mode):
+    def set_rely(self, relied: FilesCluster, rlt):
         if relied.flag_name == ViewMeta.COLOR:
             rlt:np.ndarray = rlt
             self._relied_paras.update({"image_size": rlt.shape[:2][::-1]})
@@ -113,7 +113,7 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
 class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture", ViewMeta]):
     KW_IMGAE_DIR = "images"
 
-    POSTURE_SPLITER_NAME = "reality"
+    POSTURE_SPLITER_NAME = "posture"
     POSTURE_SUBSETS = ["train", "val"]
 
 
@@ -124,7 +124,11 @@ class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture",
         }
     )
 
+    def __init__(self, directory, *, flag_name="", parent: DatasetNode = None) -> None:
+        super().__init__(directory, flag_name=flag_name, parent=parent)
+
     def init_clusters_hook(self):
+        super().init_clusters_hook()
         self.images_elements =\
               UnifiedFileCluster[UnifiedFilesHandle, UnifiedFileCluster, VocFormat_6dPosture, np.ndarray](self, self.KW_IMGAE_DIR, suffix = ".jpg" ,
                     read_func=cv2.imread, 
@@ -142,8 +146,8 @@ class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture",
                     read_func = deserialize_object,
                     write_func = serialize_object,
                     flag_name=ViewMeta.MASKS)
-        self.masks_elements.read_meta.inv_format_value = None ### TODO
-        self.masks_elements.write_meta.format_value    = None ### TODO
+        rebind_methods(self.masks_elements.read_meta, self.masks_elements.read_meta.inv_format_value, self.deserialize_mask_dict) ### TODO
+        rebind_methods(self.masks_elements.write_meta, self.masks_elements.write_meta.format_value, self.serialize_mask_dict) ### TODO
 
         self.extr_vecs_elements  = IntArrayDictAsTxtCluster(self, "trans_vecs",     array_shape=(2, 3), write_func_kwargs={"fmt":"%8.8f"},  
                                                             flag_name=ViewMeta.EXTR_VECS)
@@ -169,6 +173,28 @@ class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture",
         self.labels_elements.default_image_size = (640, 480)
         self.labels_elements.link_rely_on(self.images_elements)
 
+    @staticmethod
+    def serialize_mask_dict(obj, mask_ndarray_dict:dict[int, np.ndarray]):
+        def serialize_image(image:np.ndarray):  
+            # 将NumPy数组编码为png格式的图像
+            retval, buffer = cv2.imencode('.png', image)
+            # 将图像数据转换为字节字符串
+            image_bytes = buffer.tobytes()
+            image.tobytes()
+            return image_bytes
+
+        new_value = dict(zip(mask_ndarray_dict.keys(), [serialize_image(x) for x in mask_ndarray_dict.values()]))
+        return new_value
+
+    @staticmethod
+    def deserialize_mask_dict(obj, mask_bytes_dict:dict[int, bytes]):
+        def deserialize_image(image_bytes):  
+            image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+            image = cv2.imdecode(image_array)# 将numpy数组解码为图像
+            return image
+        new_value = dict(zip(mask_bytes_dict.keys(), [deserialize_image(x) for x in mask_bytes_dict.values()]))
+        return new_value
+
     @property
     def default_spliter(self):
         return self.spliter_group.get_cluster("default")
@@ -186,10 +212,10 @@ class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture",
         sub_set = self.default_spliter.set_one_by_rate(data_i, self.default_split_rate)
         return sub_set
     
-    def read(self, src: int)-> ViewMeta:
-        raw_read_rlt = super().raw_read(src)
+    def read(self, src: int, *, force = False, **other_paras)-> ViewMeta:
+        raw_read_rlt = super().raw_read(src, force = force, **other_paras)
         return ViewMeta(**raw_read_rlt)
     
-    def write(self, data_i: int, value: ViewMeta):
+    def write(self, data_i: int, value: ViewMeta, *, force = False, **other_paras):
         sub_dir = self.get_default_set_of(data_i)
-        super().raw_write(data_i, value.as_dict(), sub_dir = sub_dir)
+        super().raw_write(data_i, value.as_dict(), sub_dir = sub_dir, force = force, **other_paras)
