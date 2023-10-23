@@ -125,8 +125,9 @@ def get_func_name(obj, func):
         return func_name
     else:
         for name in dir(obj):
-            if getattr(obj, name) == func:
+            if hasattr(obj, name) and getattr(obj, name) == func:
                 return name
+        return None
             
 def get_function_args(function, *exclude:str):
     signature = inspect.signature(function)
@@ -136,6 +137,7 @@ def get_function_args(function, *exclude:str):
         if param.kind in ok_kind and param.name not in exclude:
             rlt.append(param.name)
     return rlt
+
 # endregion functions ###
 
 class IOStatusManager():
@@ -279,21 +281,21 @@ class IOStatusManager():
             result = []
             with open(file_path, 'r') as file:
                 for line in file:
-                    # 使用strip()函数移除行末尾的换行符，并使用split()函数分割列
+                    # split string
                     columns = line.strip().split(', ')
-                    assert len(columns) == 3, f"the format of {file_path} is wrong"
-                    log_type, key, value_str = columns
-                    # 尝试将第二列的值转换为整数
+                    assert len(columns) == 4, f"the format of {file_path} is wrong"
+                    log_type, src, dst, value_str = columns
                     log_type = int(log_type)
+                    # log_type must be in LOG_KN, and key must be int
                     assert log_type in self.LOG_KN, f"the format of {file_path} is wrong"
-                    try: key = int(key)
-                    except ValueError: pass
+                    src = int(src) if src.isdigit() else src
+                    dst = int(dst) if dst.isdigit() else dst
                     if value_str == 'None':
                         value = None
                     else:
                         try: value = int(value_str)
                         except: value = value_str
-                    result.append([log_type, key, value])
+                    result.append([log_type, src, dst, value])
             return result
         else:
             return []
@@ -792,8 +794,8 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             suffix = '.' + suffix
     
         data_path = self.cluster.data_path if data_path == "" else data_path
-        if ".." in data_path:
-            data_path = os.path.normpath(data_path)
+        # if ".." in data_path:
+        data_path = os.path.normpath(data_path)
         assert is_subpath(data_path, self.cluster.data_path), f"data_path must be in {self.cluster.data_path}"
 
         self.data_path = data_path
@@ -1421,9 +1423,10 @@ class Node(Generic[NODE]):
                 getattr(child, funcname)(*args, **kwargs)
 
     @staticmethod
-    def forward_propagate(func:Callable):
+    def downward_preorder_propagate(func:Callable):
         '''
-        root -> leaf
+        all the func of the leaves of this node will be called.
+        Preorder traversal: the func of root will be called first
         '''
         # propagating = False
         def forward_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
@@ -1431,27 +1434,59 @@ class Node(Generic[NODE]):
             funcname = get_func_name(obj, func)
             func(obj, *args, **kwargs)
             # if not propagating:
-            propagating = True
-            Node.__forward(obj, funcname, *args, **kwargs)
-            propagating = False
+            if funcname is not None:
+                Node.__forward(obj, funcname, *args, **kwargs)
+            else:
+                warnings.warn(f"can't find function {func} in {obj}, propagate ends")
+            
         return forward_propagate_wrapper
 
     @staticmethod
-    def backward_propagate(func:Callable):
+    def downward_postorder_propagate(func:Callable):
+        '''
+        root -> leaf
+        but the func will be called backward, the func of leaf will be called first
+        '''
+        # propagating = False
+        def forward_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
+            # nonlocal propagating
+            funcname = get_func_name(obj, func)
+            # if not propagating:
+            if funcname is not None:
+                Node.__forward(obj, funcname, *args, **kwargs)
+            else:
+                warnings.warn(f"can't find function {func} in {obj}, propagate ends")
+            func(obj, *args, **kwargs)
+            
+        return forward_propagate_wrapper
+
+    @staticmethod
+    def backtracking_preorder_propagate(func:Callable):
         '''
         leaf -> root
         '''
         # propagating = False
-        def backward_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
+        def backtracking_preorder_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
             # nonlocal propagating
             funcname = get_func_name(obj, func)
             # if not propagating:
-            propagating = True
-            Node.__backward(obj, funcname, *args, **kwargs)
-            propagating = False
+            if funcname is not None:
+                Node.__backward(obj, funcname, *args, **kwargs)
+            else:
+                warnings.warn(f"can't find function {func} in {obj}, propagate ends")
             func(obj, *args, **kwargs)
-        return backward_propagate_wrapper
+        return backtracking_preorder_propagate_wrapper
     
+    @staticmethod
+    def backtracking_postorder_propagate(func:Callable):
+        def backtracking_postorder_propagate_wrapper(obj:Node[NODE], *args, **kwargs):
+            funcname = get_func_name(obj, func)
+            func(obj, *args, **kwargs)
+            if funcname is not None:
+                Node.__backward(obj, funcname, *args, **kwargs)
+            else:
+                warnings.warn(f"can't find function {func} in {obj}, propagate ends")
+        return backtracking_postorder_propagate_wrapper
     # @staticmethod
     # def bi_direction_propagate(func:Callable):
     #     '''
@@ -1603,11 +1638,10 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
         self._MemoryData_modified = True
 
         self.__unfinished_operation = 0
+        self.__last_write_unfinished = False
 
-        if self.parent is not None:
-            self._set_unfinished_operation(self.parent._get_unfinished_operation())
-        # if self.mark_exist() and self._get_unfinished_operation() == 0:
-        #     self.choose_unfinished_operation()
+        if self.mark_exist():
+            self._set_last_write_unfinished()
 
     def try_open(self):
         if os.path.exists(self.data_path):
@@ -1616,6 +1650,13 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
             self.close()
         if DEBUG:
             print(f"{self.identity_string()} inited")
+        if self.parent is None and self._get_last_write_unfinished():
+            if isinstance(self, DatasetNode):
+                if len(self.elem_clusters) == len(self.MemoryData.col_names):
+                    self.process_unfinished()
+            else:
+                self.process_unfinished()
+
         # if self.mark_exist():
         #     self.process_unfinished()
         self._inited = True
@@ -1673,42 +1714,45 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
         # return os.path.join(self.top_directory, self.mapping_name, self.WRITING_MARK)
         return os.path.join(self.top_directory, self.WRITING_MARK)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def close(self, closed = True):
         super().close(closed)    
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def open(self, opened = True):
         super().open(opened)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def set_readonly(self, readonly = True):
         super().set_readonly(readonly)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def set_writable(self, writable = True):
         super().set_writable(writable)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def stop_writing(self, stop_writing = True):
         super().stop_writing(stop_writing)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def start_writing(self, start_writing = True):
         super().start_writing(start_writing)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def set_overwrite_forbidden(self, overwrite_forbidden = True):
         super().set_overwrite_forbidden(overwrite_forbidden)
 
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def set_overwrite_allowed(self, overwrite_allowed = True):
         super().set_overwrite_allowed(overwrite_allowed)
 
+    @Node.downward_preorder_propagate
+    def remove_mark(self):
+        super().remove_mark()
     # endregion DataMapping override for IOStatusManager####
     
     # region Memorydata operation ####
-    @Node.backward_propagate
+    @Node.backtracking_preorder_propagate
     def _set_MemoryData_modified(self):
         self._MemoryData_modified = True
 
@@ -1886,11 +1930,23 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
     # endregion####
 
     # region process_unfinished ####
+    @Node.downward_preorder_propagate
     def _set_unfinished_operation(self, unfinished_operation):
         self.__unfinished_operation = unfinished_operation
 
     def _get_unfinished_operation(self):
         return self.__unfinished_operation
+
+    @Node.backtracking_preorder_propagate
+    def _set_last_write_unfinished(self):
+        self.__last_write_unfinished = True
+
+    @Node.downward_preorder_propagate
+    def _reset_last_write_unfinished(self):
+        self.__last_write_unfinished = False
+
+    def _get_last_write_unfinished(self):
+        return self.__last_write_unfinished
 
     def choose_unfinished_operation(self):
         '''
@@ -1912,31 +1968,27 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
     def process_unfinished(self):    
         if self._get_unfinished_operation() == 0:
             self.choose_unfinished_operation()
-        if self._get_unfinished_operation() == 0:
-            pass
-        elif self._get_unfinished_operation() == 1:
-            self.clear(force=True)
-            self.remove_mark()
-            return True
-        elif self._get_unfinished_operation() == 2:
-            # try roll back
-            self.rebuild()
-            log = self.load_from_mark_file()
-            with self.get_writer().allow_overwriting():
-                for log_i, data_i, _ in log:
-                    if log_i == self.LOG_ADD and data_i in self.keys():
-                        self.remove(data_i)
-                        print(f"try to rollback, {data_i} in {self.identity_string()} is removed.")
-                    else:
-                        raise ValueError("can not rollback")
-            self.remove_mark()
-            return True
-        elif self._get_unfinished_operation() == 3:
-            # reinit
-            self.rebuild()
-        else:
-            raise ValueError(f"invalid operation {self._get_unfinished_operation()}")
+        if self._get_unfinished_operation() != 0:
+            self.rebuild()            
+            if self._get_unfinished_operation() == 1:
+                self.clear(force=True)
+            elif self._get_unfinished_operation() == 2:
+                # try roll back
+                log = self.load_from_mark_file()
+                with self.get_writer().allow_overwriting():
+                    for log_i, src, dst, value in log:
+                        if log_i == self.LOG_ADD and dst in self.keys():
+                            self.remove(dst)
+                            print(f"try to rollback, {dst} in {self.identity_string()} is removed.")
+                        else:
+                            raise ValueError("can not rollback")
+            elif self._get_unfinished_operation() == 3:
+                # reinit
+                pass
+            else:
+                raise ValueError(f"invalid operation {self._get_unfinished_operation()}")
         self.remove_mark()
+        self._reset_last_write_unfinished()
     # endregion TODO ####
 
     def __repr__(self):
@@ -2443,7 +2495,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                             if overwrited and log_type == self.LOG_ADD:
                                 log_type = self.LOG_CHANGE
                             self.log_to_mark_file(log_type, src, dst, value)
-                            if self.dataset_node is not None and self._IS_ELEM:
+                            if self.dataset_node is not None and (io_meta.OPER_ELEM == self._ELEM_BY_CACHE):
                                 self.dataset_node.update_overview(log_type, src, dst, value, self)
                 
                 if io_error:
@@ -2556,6 +2608,12 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         def __init__(self, files_cluster) -> None:
             super().__init__(files_cluster)
             self.core_func = os.remove
+
+        def check_dst(self, dst):
+            rlt = super().check_dst(dst)
+            if dst not in self.files_cluster.keys():
+                return False
+            return True and rlt
 
         def get_FilesHandle(self, src, dst, value, **other_paras):
             if not self.files_cluster.has_data(dst):
@@ -2899,8 +2957,8 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     
     def clear(self, *, force = False, clear_both = True):
         rlt = self._switch_io_operation(self.clear_data, self.clear_elem)(force = force, clear_both = clear_both)
-        if clear_both:
-            self.remove_memory_data_file()
+        # if clear_both:
+        #     self.remove_memory_data_file()
         return rlt
     
     def keys(self):
@@ -2927,7 +2985,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     def rebuild(self):
         paths:list[str] = self.matching_path()
         
-        for path in paths:
+        for path in tqdm(paths, desc=f"rebuilding {self}", leave=False):
             fh = self.FILESHANDLE_TYPE.from_path(self, path)
             data_i = self.deformat_corename(fh.corename)
             data_i = data_i if data_i is not None else self.data_i_upper
@@ -3009,6 +3067,8 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # region - override methods #
     def __init__(self, top_directory:Union[str, "DatasetNode"], mapping_name: str = "", *args, flag_name = "", **kwargs) -> None:
         super().__init__(top_directory, mapping_name, *args, flag_name = flag_name,  **kwargs)
+        if self.parent is None:
+            print(f"initilizing {self}")
         # if parent is not None:
         #     super().__init__(os.path.join(parent.data_path, directory), "", flag_name=flag_name)
         # else:
@@ -3371,8 +3431,10 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     # endregion cache operation ######
 
     # region Memorydata operation ####
-    @Node.forward_propagate
+    @Node.downward_preorder_propagate
     def update_overview(self, log_type, src, dst, value, cluster:FilesCluster):
+        if not cluster._IS_ELEM:
+            return
         col_name = cluster.identity_name()
         is_child = cluster in self.clusters
         if log_type == self.LOG_READ or\
@@ -3380,15 +3442,17 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         log_type == self.LOG_OPERATION:
             return
         if log_type == self.LOG_ADD:
-            self.MemoryData.add_row(dst, exist_ok=True)
+            if self.MemoryData.add_row(dst, exist_ok=True):
+                self.log_to_mark_file(log_type, src, dst, None)
             if is_child:
                 self.MemoryData[dst, col_name] = True
-        if log_type == self.LOG_REMOVE:
-            if dst in self.MemoryData:
-                if is_child:
-                    self.MemoryData[dst, col_name] = False
-                if self._clear_empty_row(dst):
-                    self.operate_children_node(DatasetNode._clear_empty_row, dst, force=True)
+
+        if log_type == self.LOG_REMOVE and dst in self.MemoryData:
+            if is_child:
+                self.MemoryData[dst, col_name] = False
+            if self._clear_empty_row(dst):
+                self.operate_children_node(DatasetNode._clear_empty_row, dst, force=True)
+                self.log_to_mark_file(log_type, src, dst, value)
 
         if log_type == self.LOG_MOVE:
             self.MemoryData.add_row(dst, exist_ok=True) 
@@ -3397,7 +3461,9 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
                 self.MemoryData[src, col_name] = False
             if self._clear_empty_row(src):
                 self.operate_children_node(DatasetNode._move_row, src, dst)
+                self.log_to_mark_file(log_type, src, dst, value)
 
+        # update clusters
         if not is_child and not self.is_update_clusters:
             self.is_update_clusters = True
             self.update_clusters(log_type, src, dst, value, cluster)
@@ -3406,14 +3472,15 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
     def update_clusters(self, log_type, src, dst, value, cluster):
         raise NotImplementedError
 
-    @Node.forward_propagate
+    @Node.downward_postorder_propagate
     def rebuild(self):
+        # TODO rebuild 必须基于叶的rebuild
         if len(self.elem_clusters) > 0:
             rows = [x for x in range(self.i_upper)]
             cols = [x.identity_name() for x in self.elem_clusters]
             self._MemoryData = Table(rows, cols, bool, row_name_type=int, col_name_type=str) # type: ignore
             i_upper = max([x.i_upper for x in self.elem_clusters])
-            for data_i in tqdm(range(i_upper), desc="initializing data frame"):
+            for data_i in tqdm(range(i_upper), desc=f"rebuild {self}"):
                 self.calc_overview(data_i)
 
     def merge_MemoryData(self, MemoryData:Table[int, str, bool]):
@@ -3437,7 +3504,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
             self.MemoryData[data_i, cluster.identity_name()] = cluster.has(data_i)
 
     def _clear_empty_row(self, data_i:int, force = False):
-        if data_i in self.MemoryData and (not any(self.MemoryData[data_i].values()) or force):
+        if (data_i in self.MemoryData) and (not any(self.MemoryData.get_row(data_i).values()) or force):
             self.MemoryData.remove_row(data_i, not_exist_ok=True)
             return True
         else:
@@ -3448,16 +3515,15 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         self.MemoryData.set_row(dst, self.MemoryData.get_row(src))
         self.MemoryData.remove_row(src, not_exist_ok=True)
             
-
     # def rebuild_all(self):
     #     self.rebuild()
     #     self.operate_clusters(FilesCluster.rebuild)
     #     self.operate_children_node(DatasetNode.rebuild_all)
 
-    # def save_all(self, force = False):
-    #     self.save(force=force)
-    #     self.operate_clusters(FilesCluster.save, force=force)
-    #     self.operate_children_node(DatasetNode.save_all, force=force)
+    def save_all(self, force = False):
+        self.save(force=force)
+        self.operate_clusters(FilesCluster.save, force=force)
+        self.operate_children_node(DatasetNode.save_all, force=force)
     # endregion Memorydata operation ####
 
     # # region 

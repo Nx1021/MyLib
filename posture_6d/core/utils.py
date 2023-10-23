@@ -537,12 +537,16 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
         if self.__key_assert(row_name, self.__row_names, False, ignore=exist_ok):
             self.__row_names.append(row_name)
             self.__data[row_name] = {col_name: self.gen_default_value() for col_name in self.__col_names}
+            return True
+        return False
 
     def remove_row(self, row_name:Union[int,str], not_exist_ok=False):
         row_name = self._row_name_filter(row_name)
         if self.__key_assert(row_name, self.__row_names, True, ignore=not_exist_ok):
             del self.__data[row_name]
             self.__row_names.remove(row_name)
+            return True
+        return False
 
     def add_column(self, col_name:COLKETT, exist_ok=False):
         assert isinstance(col_name, self.col_name_type)
@@ -550,6 +554,8 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
             self.__col_names.append(col_name)
             for row_name in self.__row_names:
                 self.__data[row_name][col_name] = self.gen_default_value()
+            return True
+        return False
 
     def remove_column(self, col_name:Union[int,str], not_exist_ok=False):
         col_name = self._col_name_filter(col_name)
@@ -557,6 +563,8 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
             for row_name in self.__row_names:
                 del self.__data[row_name][col_name]
             self.__col_names.remove(col_name)
+            return True
+        return False
 
     def resort_row(self, new_row_names:list[Union[int,str]]):
         new_row_names = [self._row_name_filter(row_name) for row_name in new_row_names]
@@ -724,10 +732,10 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
     def __str__(self) -> str:
         if len(self.__data) == 0:
             return f"Empty Table :" + \
-                f"row_name{self.row_names}, col_name{self.col_names}" + \
-                f"default_value_type:{self.default_value_type.__name__}" + \
-                f"row_name_type:{self.row_name_type.__name__}" + \
-                f"col_name_type:{self.col_name_type.__name__}"
+                f"row_name{self.row_names}, col_name{self.col_names} " + \
+                f"default_value_type:{self.default_value_type.__name__} " + \
+                f"row_name_type:{self.row_name_type.__name__} " + \
+                f"col_name_type:{self.col_name_type.__name__} "
 
         max_col_widths = {col_name: len(col_name) for col_name in self.__col_names}
         str_data = {}

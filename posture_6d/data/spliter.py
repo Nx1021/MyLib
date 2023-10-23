@@ -389,7 +389,7 @@ class SpliterGroup(DatasetNode[Spliter, SPG, Table[int, str, bool]], Generic[SP,
         for spliter in self.clusters_map.values():
             spliter.write_elem(dst, spliter.read_elem(src))
 
-    # @Node.forward_propagate
+    # @Node.downward_preorder_propagate
     # def update_overview(self, log_type, src, dst, value, cluster:FilesCluster):
     #     super().update_overview(log_type, src, dst, value, cluster)
     #     if log_type == self.LOG_READ or\

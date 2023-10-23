@@ -99,7 +99,7 @@ def test_dataset():
     dsn.add_cluster(DisunifiedFileCluster(dsn, "dfc"))
     dsn.add_cluster(DictLikeCluster(dsn, "dlc"))
 
-    # dsn.reopen()
+    # dsn.process_unfinished()
 
     dlc:DictLikeCluster = dsn.get_cluster("dlc")
     if "f0.json" not in dlc.file_names:
