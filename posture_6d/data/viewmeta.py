@@ -137,6 +137,7 @@ class ViewMeta():
     '''
     一个视角下的所有数据的元
     '''
+    # region augment pipeline
     class ColorAP(AugmentPipeline):
         '''
         Color image augment pipline
@@ -338,7 +339,7 @@ class ViewMeta():
         def _rotate(self, M:cv2.Mat):
             new_masks = self.new_masks_callback()
             return self.meta.calc_bbox2d_from_mask(new_masks)
-
+    # endregion augment pipeline
     IGNORE_WARNING = False
 
     PARA_NAMES = ["color", 

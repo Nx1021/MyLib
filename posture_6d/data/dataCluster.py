@@ -90,9 +90,9 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         self.suffix = suffix
         
         read_func, write_func, value_type = self.try_get_default(suffix, read_func, write_func, value_type)
-        self.read_func = read_func if read_func is not None else self.DEFAULT_READ_FUNC
-        self.write_func = write_func if write_func is not None else self.DEFAULT_WRITE_FUNC
-        self.value_type = value_type if value_type is not None else self.DEFAULT_VALUE_TYPE
+        self.read_func  = read_func  
+        self.write_func = write_func 
+        self.value_type = value_type 
 
         read_func_args = tuple() if read_func_args is None else read_func_args
         read_func_kwargs = dict() if read_func_kwargs is None else read_func_kwargs
@@ -115,7 +115,7 @@ class UnifiedFileCluster(FilesCluster[UFH, UFC, DSNT, VDMT], Generic[UFH, UFC, D
         self.cache_priority = False 
 
     #####
-    def create_fileshandle(self, src, dst, value, * ,sub_dir = "", **other_paras):
+    def create_fileshandle_in_iometa(self, src, dst, value, * ,sub_dir = "", **other_paras):
         if not self.MULTI_FILES:
             corename = self.format_corename(dst)
             fh = self.FILESHANDLE_TYPE(self, sub_dir, corename, self.suffix)
@@ -304,9 +304,9 @@ class DisunifiedFilesHandle(FilesHandle[DFC, VDMT], Generic[DFC, VDMT]):
     #         cls._instances[file_id_str] = instance
     #     return cls._instances[file_id_str]
         
-    def init_input_hook(self, *, suffix:str, read_func, write_func, value_type, **kw):
-        read_func, write_func, value_type = self.try_get_default(suffix, read_func, write_func, value_type)
-        return super().init_input_hook(suffix = suffix, read_func=read_func, write_func=write_func, value_type=value_type, **kw)
+    # def init_input_hook(self, *, suffix:str, read_func, write_func, value_type, **kw):
+    #     read_func, write_func, value_type = self.try_get_default(suffix, read_func, write_func, value_type)
+    #     return super().init_input_hook(suffix = suffix, read_func=read_func, write_func=write_func, value_type=value_type, **kw)
 
     @property
     def file(self):
@@ -328,7 +328,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
             self._set_fileshandle(self.data_i_upper, fh)
 
     #####
-    def create_fileshandle(self, src:int, dst:int, value:Any, **other_paras):
+    def create_fileshandle_in_iometa(self, src:int, dst:int, value:Any, **other_paras):
         if not self.MULTI_FILES:
             if isinstance(value, DisunifiedFilesHandle):
                 fh = self.FILESHANDLE_TYPE.from_fileshandle(self, value)

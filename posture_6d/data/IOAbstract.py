@@ -726,6 +726,10 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         ".tif":  [cv2.imread, cv2.imwrite, None],
     }
 
+    DEFAULT_SUFFIX = None
+    DEFAULT_PREFIX = None
+    DEFAULT_PREFIX_JOINER = None
+    DEFAULT_APPENDNAMES_JOINER = None
     DEFAULT_READ_FUNC = None
     DEFAULT_WRITE_FUNC = None
     DEFAULT_VALUE_TYPE = None
@@ -739,9 +743,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     _unpickleable_func = []
     _pickleable_func   = []
-    KW_FUNC_NAME    = "func_name"
-    KW_FUNC_MODULE = "func_module"
-    KW_FUNC_BIND_ARGS = "func_bind_args"
+    KW_FUNC_NAME        = "func_name"
+    KW_FUNC_MODULE      = "func_module"
+    KW_FUNC_BIND_ARGS   = "func_bind_args"
     KW_FUNC_BIND_KWARGS = "func_bind_kwargs"
     # endregion class variables ###
 
@@ -753,23 +757,31 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         cls._registry[identity_string] = obj
 
     @classmethod
-    def get_instance(cls, identity_string, orig_obj):
+    def get_instance(cls, identity_string, orig_obj:"FilesHandle"):
         if cls.RETURN_INITED:
             obj = cls._registry[identity_string]
+            if obj.multi_files:
+                for appname in orig_obj._appendnames_obj.appendnames:
+                    obj.add_appendname(appname)
             return obj
         else:
             cls.RETURN_INITED = True
             return orig_obj
 
     def identity_string(self):
-        return self.get_path()
+        if not self.multi_files:
+            return self.get_path()
+        else:
+            dir_ = self.get_dir()
+            name = self.prefix_with_joiner + self.corename + self._appendnames_obj.joiner + '[...]' + self.suffix 
+            return os.path.join(dir_, name)
 
     def identity_name(self):
         return self.corename
 
     def init_identity(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
-                 prefix:str = "", appendnames:list[str] = None,  # type: ignore
-                 prefix_joiner:str = '', appendnames_joiner:str = '',
+                 prefix:str = None, appendnames:Union[str, list[str]] = None,  # type: ignore
+                 prefix_joiner:str = None, appendnames_joiner:str = None,
                  data_path = "",
                  read_func:Callable = None, write_func:Callable = None, 
                  cache = None, value_type:Callable = None):
@@ -777,19 +789,15 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         principle: the parameter of identity can not be changed once it has been inited
         '''
         self.cluster = cluster
-        (   sub_dir, corename, suffix, 
-            prefix, appendnames, prefix_joiner, appendnames_joiner, 
-            data_path, 
-            read_func, write_func, 
-            cache, value_type) =\
-            self.init_input_hook(sub_dir = sub_dir, corename = corename, suffix = suffix, 
-                                prefix = prefix, appendnames = appendnames, 
-                                prefix_joiner = prefix_joiner, appendnames_joiner = appendnames_joiner,
-                                data_path = data_path,
-                                read_func = read_func, write_func = write_func,
-                                cache = cache, value_type = value_type)
 
-        appendnames = appendnames if appendnames is not None else ['']
+        sub_dir             = get_with_priority(sub_dir)
+        corename            = get_with_priority(corename)
+        suffix              = get_with_priority(suffix, self.DEFAULT_SUFFIX)
+
+        prefix              = get_with_priority(prefix,             cluster.DEFAULT_PREFIX,             self.DEFAULT_PREFIX,             '')
+        prefix_joiner       = get_with_priority(prefix_joiner,      cluster.DEFAULT_PREFIX_JOINER,      self.DEFAULT_PREFIX_JOINER,      '')
+        appendnames_joiner  = get_with_priority(appendnames_joiner, cluster.DEFAULT_APPENDNAMES_JOINER, self.DEFAULT_APPENDNAMES_JOINER, '')
+
         if len(suffix) == 0 or suffix[0] != '.':
             suffix = '.' + suffix
     
@@ -829,8 +837,8 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     # region - init
     def __init__(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
-                 prefix:str = "", appendnames:list[str] = None,  # type: ignore
-                 prefix_joiner:str = '', appendnames_joiner:str = '',
+                 prefix:str = None, appendnames:Union[str, list[str]] = None,  # type: ignore
+                 prefix_joiner:str = None, appendnames_joiner:str = None,
                  data_path = "",
                  read_func:Callable = None, write_func:Callable = None, 
                  cache = None, value_type:Callable = None) -> None: #type: ignore
@@ -862,8 +870,8 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                 cache = self.read()
             else:
                 cache = cache
-        Table.get_column
-        self.cache_proxy:CacheProxy = CacheProxy(cache, value_type, self.DEFAULT_VALUE_INIT_FUNC)
+        default_value_type = get_with_priority(self.cluster.DEFAULT_VALUE_INIT_FUNC, self.DEFAULT_VALUE_TYPE)
+        self.cache_proxy:CacheProxy = CacheProxy(cache, value_type, default_value_type)
 
         self.init_additional_hook()
 
@@ -880,6 +888,12 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     def init_additional_hook(self):
         pass
+    
+    def add_appendname(self, appendname):
+        return self._appendnames_obj.add_appendname(appendname)
+    
+    def remove_appendname(self, appendname):
+        return self._appendnames_obj.remove_appendname(appendname)
     # endregion - init
 
     # region - export and import func
@@ -971,24 +985,18 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     # region - create instance
     @classmethod
-    def try_get_default(cls, file:str,
-                            read_func:Callable = None, 
-                            write_func:Callable = None, 
-                            value_type:Callable = None):
+    def get_default_file_type(cls, file:str):
         if file.startswith('.'):
             suffix = file
         else:
             suffix = os.path.splitext(file)[1]
         if suffix in cls.DEFAULT_FILE_TYPE:
-            _read_func, _write_func, _value_type = cls.DEFAULT_FILE_TYPE[suffix]
-            read_func = get_with_priority(read_func, cls.DEFAULT_READ_FUNC, _read_func)
-            write_func = get_with_priority(write_func, cls.DEFAULT_WRITE_FUNC, _write_func)
-            value_type = get_with_priority(value_type, cls.DEFAULT_VALUE_TYPE, _value_type)
-        # else:
-        #     warnings.warn(f"can't find default file type for {suffix}", ClusterNotRecommendWarning)
+            read_func, write_func, value_type = cls.DEFAULT_FILE_TYPE[suffix]
+        else:
+            read_func, write_func, value_type = None, None, None
 
         return read_func, write_func, value_type
-
+    
     @classmethod
     def create_temp(cls):
         cls.RETURN_INITED = False
@@ -996,7 +1004,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     @classmethod
     def from_path(cls, cluster:FCT, path:Union[str, list[str]], *,
-                  prefix_joiner:str = '', appendnames_joiner:str = '', 
+                  prefix_joiner:str = None, appendnames_joiner:str = None, 
                   read_func:Callable = None, write_func:Callable = None, 
                   cache = None, value_type:Callable = None,  #type: ignore
                   _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None): #type: ignore
@@ -1016,11 +1024,27 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     @classmethod
     def from_name(cls, cluster:FCT, filename:Union[str, list[str]], *,
-                  prefix_joiner:str = '', appendnames_joiner:str = '', 
+                  prefix_joiner:str = None, appendnames_joiner:str = None, 
                   read_func:Callable = None, write_func:Callable = None, 
                   cache = None, value_type:Callable = None,  #type: ignore
                   _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None):
+        '''
+        cluster: the FilesCluster object
+        filename: the name of the file, can be a str or a list of str
+        prefix_joiner: the joiner between prefix and corename
+        appendnames_joiner: the joiner between appendnames
+        read_func: the function to read the file
+        write_func: the function to write the file
+        cache: the cache object
+        value_type: the type of the cache object
+        _extract_corename_func: the function to extract the corename, the function should return a tuple:
+                                (sub_dir, corename, suffix, prefix, appendname, _prefix_joiner, _appendnames_joinerr)
+        '''
+        prefix_joiner       = get_with_priority(prefix_joiner,      cluster.DEFAULT_PREFIX_JOINER,      cls.DEFAULT_PREFIX_JOINER,      '')
+        appendnames_joiner  = get_with_priority(appendnames_joiner, cluster.DEFAULT_APPENDNAMES_JOINER, cls.DEFAULT_APPENDNAMES_JOINER, '')
+
         def parse_one(file_name:str):
+            nonlocal prefix_joiner, appendnames_joiner
             splitlist = file_name.split(os.sep, 2)
             if len(splitlist) == 1:
                 sub_dir, file_name = "", splitlist[0]
@@ -1044,7 +1068,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                     corename, appendname = rest.split(appendnames_joiner, 1)
 
             return sub_dir, corename, suffix, prefix, appendname, _prefix_joiner, _appendnames_joiner
-        
+
         if isinstance(filename, str):
             sub_dir, corename, suffix, prefix, appendname, _prefix_joiner, _appendnames_joiner = parse_one(filename)
             appendnames = list[str]([appendname])
@@ -1068,6 +1092,14 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             suffix = suffixes[0]
             prefix = prefixes[0]
 
+        suffix              = get_with_priority(suffix, cluster.DEFAULT_SUFFIX, cls.DEFAULT_SUFFIX)
+        prefix              = get_with_priority(prefix, cluster.DEFAULT_PREFIX, cls.DEFAULT_PREFIX)
+
+        _read_func, _write_func, _value_type = cls.get_default_file_type(suffix)
+        read_func           = get_with_priority(read_func,  cluster.DEFAULT_READ_FUNC,  cls.DEFAULT_READ_FUNC,  _read_func)
+        write_func          = get_with_priority(write_func, cluster.DEFAULT_WRITE_FUNC, cls.DEFAULT_WRITE_FUNC, _write_func)
+        value_type          = get_with_priority(value_type, cluster.DEFAULT_VALUE_TYPE, cls.DEFAULT_VALUE_TYPE, _value_type)
+
         data_path = cluster.data_path
         return cls(cluster, sub_dir, corename, suffix,
                    prefix = prefix, appendnames = appendnames, prefix_joiner = prefix_joiner, appendnames_joiner = appendnames_joiner,
@@ -1076,26 +1108,26 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                    cache = cache, value_type = value_type)
 
     @classmethod
-    def from_fileshandle(cls, cluster, file_handle:"FilesHandle", *,
+    def from_fileshandle(cls, cluster:FCT, file_handle:"FilesHandle", *,
                         sub_dir:str = None, corename:str = None, suffix:str = None, #type: ignore
-                        prefix:str = None, appendnames:list[str] = None, prefix_joiner:str = None, appendnames_joiner:str = None, #type: ignore
+                        prefix:str = None, appendnames:Union[str, list[str]] = None, prefix_joiner:str = None, appendnames_joiner:str = None, #type: ignore
                         read_func:Callable = None, write_func:Callable = None, 
                         cache = None, value_type:Callable = None): #type: ignore
-        sub_dir = file_handle.sub_dir if sub_dir is None else sub_dir
-        corename = file_handle.corename if corename is None else corename
-        suffix = file_handle.suffix if suffix is None else suffix
+        sub_dir             = get_with_priority(sub_dir, file_handle.sub_dir)
+        corename            = get_with_priority(corename, file_handle.corename)
+        suffix              = get_with_priority(suffix, file_handle.suffix, cluster.DEFAULT_SUFFIX, cls.DEFAULT_SUFFIX)
 
-        prefix = file_handle.prefix if prefix is None else prefix
-        appendnames = file_handle._appendnames_obj.appendnames if appendnames is None else appendnames
-        prefix_joiner = file_handle._prefix_obj.joiner if prefix_joiner is None else prefix_joiner
-        appendnames_joiner = file_handle._appendnames_obj.joiner if appendnames_joiner is None else appendnames_joiner
+        prefix              = get_with_priority(prefix, file_handle.prefix, cluster.DEFAULT_PREFIX, cls.DEFAULT_PREFIX)
+        appendnames         = get_with_priority(file_handle._appendnames_obj.appendnames, appendnames)
+        prefix_joiner       = get_with_priority(prefix_joiner,      file_handle._prefix_obj.joiner,      cluster.DEFAULT_PREFIX_JOINER,      cls.DEFAULT_PREFIX_JOINER,      '')
+        appendnames_joiner  = get_with_priority(appendnames_joiner, file_handle._appendnames_obj.joiner, cluster.DEFAULT_APPENDNAMES_JOINER, cls.DEFAULT_APPENDNAMES_JOINER, '')
 
-        read_func = file_handle.read_func if read_func is None else read_func
-        write_func = file_handle.write_func if write_func is None else write_func
+        _read_func, _write_func, _value_type = cls.get_default_file_type(suffix)
+        read_func           = get_with_priority(read_func,  file_handle.read_func,  cluster.DEFAULT_READ_FUNC,  cls.DEFAULT_READ_FUNC,  _read_func)
+        write_func          = get_with_priority(write_func, file_handle.write_func, cluster.DEFAULT_WRITE_FUNC, cls.DEFAULT_WRITE_FUNC, _write_func)
+        value_type          = get_with_priority(value_type, file_handle.value_type, cluster.DEFAULT_VALUE_TYPE, cls.DEFAULT_VALUE_TYPE, _value_type)
 
-        cache = file_handle.cache if cache is None else cache
-        value_type = file_handle.value_type if value_type is None else value_type
-        
+        cache               = get_with_priority(cache, file_handle.cache)
         return cls(cluster, sub_dir, corename, suffix,
                     prefix = prefix, appendnames = appendnames, prefix_joiner = prefix_joiner, appendnames_joiner = appendnames_joiner,
                     data_path = "",
@@ -1111,7 +1143,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     # region make immutable
     def __hash__(self):
-        return hash(self.get_path()) # + id(self)
+        return hash(self.identity_string()) # + id(self)
     
     def __eq__(self, o: object) -> bool:
         if isinstance(o, FilesHandle):
@@ -1137,7 +1169,15 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         return super().__setattr__(name, value)
     # endregion make immutable
 
-    # region IO status    
+    # region property from cluster
+    @property
+    def valid(self):
+        return self.cluster is not None
+
+    @property
+    def multi_files(self):
+        return self.cluster.MULTI_FILES
+
     @property
     def is_closed(self):
         return self.cluster.closed
@@ -1152,10 +1192,6 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     # endregion IO status    
 
     # region get immutable
-    @property
-    def multi_files(self):
-        return self.cluster.MULTI_FILES
-
     @property
     def prefix(self) -> str:
         return self._prefix_obj.prefix
@@ -1226,10 +1262,6 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     def file_exist_status(self) -> list[bool]:
         paths = self.get_path(get_list=True)
         return [os.path.exists(x) for x in paths]
-
-    @property
-    def valid(self):
-        return self.cluster is not None
 
     def get_name(self, get_list = False) -> Union[list[str], str]:
         if self.multi_files or get_list:
@@ -1324,7 +1356,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
             string = f"FilesHandle({self.get_path()})"
         else:
             paths = self.get_path(get_list=True)
-            string = f"FilesHandle({paths[0]}) + {len(paths) - 1} files"
+            string = f"FilesHandle({paths[0]}) + {len(paths) - 1} files,"
         string += f" file exist: {self.file_exist_status}, has cache: {self.has_cache}, synced: {self.synced}"
         return string
     # endregion other
@@ -1540,7 +1572,6 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
     _DMT = TypeVar('_DMT', bound="DataMapping")
     _VDMT = TypeVar('_VDMT')
 
-    MULTI_FILES = False
     MEMORY_DATA_FILE = ".datamap"
     MEMORY_DATA_TYPE = BinDict
 
@@ -2150,6 +2181,14 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
 
     def split_value_as_mutil(self, *core_values):
         raise NotImplementedError
+    
+    def assert_path_exists(self, path):
+        if isinstance(path, str):
+            if not os.path.exists(path) and self.PATH_EXISTS_REQUIRED:
+                raise IOMetaPriorityError("file not found")
+        elif isinstance(path, list):
+            if any([not os.path.exists(x) for x in path]) and self.PATH_EXISTS_REQUIRED:
+                raise IOMetaPriorityError("file not found")
     # endregion hook funcs
 
     # region io pipeline
@@ -2158,15 +2197,14 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
         path, *core_values = self.cvt_to_core_paras(src_file_handle = src_file_handle, 
                                            dst_file_handle = dst_file_handle, 
                                            value = value)
-        if not os.path.exists(path) and self.PATH_EXISTS_REQUIRED:
-            raise IOMetaPriorityError("file not found")
+        self.assert_path_exists(path)
         core_func = self.get_file_core_func(src_file_handle, dst_file_handle, value)
         core_func = self.core_func if core_func is None else core_func
         if core_func is not None:
-            if self.multi_files:
+            if self.multi_files and self.__class__.__name__ == "_write":
                 core_values = self.split_value_as_mutil(*core_values)
             rlt = self.execute_core_func(core_func, path, *core_values)
-            if self.multi_files:
+            if self.multi_files and self.__class__.__name__ == "_read":
                 return self.gather_mutil_results(rlt)
         else:
             raise IOMetaPriorityError("core_func is None")
@@ -2263,6 +2301,19 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     ALWAYS_ALLOW_WRITE = False
     ALWAYS_ALLOW_OVERWRITE = False
 
+    # fileshandle_default_paras
+
+    DEFAULT_SUFFIX = None
+    DEFAULT_PREFIX = None
+    DEFAULT_PREFIX_JOINER = None
+    DEFAULT_APPENDNAMES_JOINER = None
+    DEFAULT_READ_FUNC = None
+    DEFAULT_WRITE_FUNC = None
+    DEFAULT_VALUE_TYPE = None
+    DEFAULT_VALUE_INIT_FUNC = None
+
+    MULTI_FILES = False
+
     # region FilesCluster override ####
 
     # region - override new #
@@ -2294,17 +2345,6 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     @property
     def MemoryData(self) -> BinDict[int, FHT]:
         return self._MemoryData
-
-    # @property
-    # def top_directory(self) -> str:
-    #     if self._dataset_node is not None:
-    #         return self._dataset_node.top_directory
-    #     else:
-    #         return self._top_directory
-
-    # @top_directory.setter
-    # def top_directory(self, value):
-    #     return None
     
     # endregion - override methods #
 
@@ -2315,13 +2355,6 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     def dataset_node(self) -> "DatasetNode":
         return self.parent
     
-    # @dataset_node.setter
-    # def dataset_node(self, dataset_node:"DatasetNode"): #TODO
-    #     if self.parent is not None:
-    #         self.unregister_from_dataset()
-    #     self._dataset_node = dataset_node
-    #     self.register_to_dataset()
-
     @property
     def registerd(self):
         return self.dataset_node is not None and \
@@ -2353,7 +2386,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         return self.MemoryData[data_i]
     
     @abstractmethod
-    def create_fileshandle(self, src, dst, value, **other_paras) -> FHT:
+    def create_fileshandle_in_iometa(self, src, dst, value, **other_paras) -> FHT:
         pass
 
     def format_corename(self, data_i:int):
@@ -2368,6 +2401,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         assert isinstance(fileshandle, self.FILESHANDLE_TYPE), f"fileshandle must be {self.FILESHANDLE_TYPE}, not {type(fileshandle)}"
         if fileshandle not in self.MemoryData._reverse_dict:
             self.MemoryData[data_i] = fileshandle
+            self._set_MemoryData_modified()
             return True
         return False
 
@@ -2390,32 +2424,45 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             return self.dataset_node.cluster_use_rely
 
     def link_rely_on(self, cluster:"FilesCluster"):
-        if cluster not in cluster._relying_clusters:
-            cluster._relying_clusters.append(self)
+        if cluster not in cluster.__relying_clusters:
+            cluster.__relying_clusters.append(self)
+            self.__relied_clusters.append(cluster)
+            if cluster.dataset_node is not None:
+                cluster.dataset_node.cluster_use_rely = True
+            if self.dataset_node is not None:
+                self.dataset_node.cluster_use_rely = True
 
     def unlink_rely_on(self, cluster:"FilesCluster"):
-        if cluster in cluster._relying_clusters:
-            cluster._relying_clusters.remove(self)
+        if cluster in cluster.__relying_clusters:
+            cluster.__relying_clusters.remove(self)
+            self.__relied_clusters.remove(cluster)
 
-    def send_rely(self, rlt):
+    def _send_rely(self, rlt):
         '''
         send parameters to other cluster
         '''
         if self.use_rely:
-            for c in self._relying_clusters:
-                c.set_rely(self, rlt)
+            for c in self.__relying_clusters:
+                c._clear_rely()
+                c._set_rely(self, rlt)
 
-    def set_rely(self, relied:"FilesCluster", rlt):
+    def _set_rely(self, relied:"FilesCluster", rlt):
         '''
         set relied parameters from other cluster, relied is the cluster that send the parameters, rlt is the parameters
         '''
         pass
 
-    def get_rely(self):
-        rlt = self._relied_paras.copy()
-        self._relied_paras.clear()
+    def _get_rely(self, name):
+        if name not in self.__relied_paras:
+            raise KeyError(f"rely parameter not found, maybe you should call 'read' or 'write' of the relying cluster:{self.__relied_clusters} before that of self")
+        rlt = self.__relied_paras[name]
         return rlt
+    
+    def _update_rely(self, name, rlt):
+        self.__relied_paras[name] = rlt
 
+    def _clear_rely(self):
+        self.__relied_paras.clear()
     # endregion - io rely #
 
     # region - io metas #
@@ -2428,8 +2475,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         self.change_dir_meta:IOMeta[FCT, VDMT, FHT]      = self._change_dir(self)
 
     def init_attrs(self):
-        self._relying_clusters:list[FilesCluster]    = []
-        self._relied_paras                           = {}
+        self.__relying_clusters:list[FilesCluster]    = []
+        self.__relied_clusters:list[FilesCluster]     = []
+        self.__relied_paras                           = {}
 
     def cvt_key(self, key):
         if self.KEY_TYPE == int:
@@ -2546,7 +2594,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
 
         def get_FilesHandle(self, src, dst, value,  **other_paras):
             if not self.files_cluster.has_data(dst):
-                fh:FilesHandle = self.files_cluster.create_fileshandle(src, dst, value, **other_paras)
+                fh:FilesHandle = self.files_cluster.create_fileshandle_in_iometa(src, dst, value, **other_paras)
                 self.files_cluster._set_fileshandle(dst, fh)
             return None, self._query_fileshandle(dst)
 
@@ -2931,16 +2979,12 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
             return self.data_i_upper
 
     def read(self, src:int, *, force = False, **other_paras) -> VDMT:
-        read_rely_paras = self.get_rely()
-        other_paras.update(read_rely_paras)
         rlt = self._switch_io_operation(self.read_data, self.read_elem)(src = src, force = force, **other_paras)
-        self.send_rely(rlt)
+        self._send_rely(rlt)
         return rlt
 
     def write(self, dst:int, value:VDMT, *, force = False, **other_paras) -> None:
-        self.send_rely(value)
-        write_rely_paras = self.get_rely()
-        other_paras.update(write_rely_paras)
+        self._send_rely(value)
         return self._switch_io_operation(self.write_data, self.write_elem)(dst = dst, value = value, force = force, **other_paras)
         
     def modify_key(self, src:int, dst:int, *, force = False, **other_paras) -> None:
@@ -2983,6 +3027,9 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         return paths
 
     def rebuild(self):
+        if not self.MemoryData_modified:
+            return
+
         paths:list[str] = self.matching_path()
         
         for path in tqdm(paths, desc=f"rebuilding {self}", leave=False):
@@ -2993,6 +3040,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                 self._set_fileshandle(data_i, fh)
             else:
                 self.paste_file(data_i, fh)
+            self._reset_MemoryData_modified()
 
         for fh in list(self.MemoryData.values()):
             if fh.empty:
@@ -3271,7 +3319,7 @@ class DatasetNode(DataMapping[dict[str, bool], DSNT, VDST], ABC, Generic[FCT, DS
         self._cluster_use_rely = value
         if value == True and not self.cluster_use_rely:
             for cluster in self.clusters:
-                cluster._relied_paras.clear()
+                cluster._clear_rely()
 
     def cluster_use_rely_decorator(func):
         def cluster_use_rely_decorator_wrapper(self:"DatasetNode", *args, **kwargs):

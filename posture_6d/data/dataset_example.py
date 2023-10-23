@@ -1,23 +1,132 @@
 from typing import Callable
 
+from MyLib.posture_6d.data.IOAbstract import FilesCluster
+
 from .dataset import Dataset, DatasetNode, Mix_Dataset
 from .dataCluster import UnifiedFileCluster, DisunifiedFileCluster, DictLikeCluster, UnifiedFilesHandle, DisunifiedFilesHandle, DictLikeHandle,\
     IntArrayDictAsTxtCluster, NdarrayAsTxtCluster
-from .IOAbstract import ClusterWarning, FilesCluster
+from .IOAbstract import ClusterWarning, FilesCluster, get_with_priority
 from .viewmeta import ViewMeta
 from ..core.utils import deserialize_object, serialize_object, rebind_methods
+from ..core.posture import Posture
 
 import numpy as np
 import cv2
 import warnings
 from functools import partial
 
+class MutilMaskFilesHandle(UnifiedFilesHandle):
+    pass
+
+class MutilMaskCluster(UnifiedFileCluster[MutilMaskFilesHandle, "MutilMaskCluster", "BopFormat", dict[int, np.ndarray]]):
+    
+    MULTI_FILES = True
+
+    DEFAULT_APPENDNAMES_JOINER = "_"
+    DEFAULT_READ_FUNC = cv2.imread
+    DEFAULT_WRITE_FUNC = cv2.imwrite
+    DEFAULT_SUFFIX = ".png"
+
+    KW_ID_SEQ = "id_seq"
+    
+    def _set_rely(self, relied: DictLikeHandle, rlt:dict):
+        '''
+        rlt = {
+            "scene_camera": {KW_CAM_K: array, KW_cam_R_w2c: array, KW_cam_t_w2c: array, KW_CAM_DS:float}
+            "scene_gt": [{KW_GT_R: array, KW_GT_t: array, KW_GT_ID: int}, ...]
+        }
+        '''
+        ids = [x[BopFormat.KW_GT_ID] for x in rlt[1]]
+        self._update_rely(self.KW_ID_SEQ, ids)
+
+    class _read(UnifiedFileCluster._read["MutilMaskCluster", dict[int, np.ndarray], MutilMaskFilesHandle]):
+        def gather_mutil_results(self, results:list):
+            id_seq = self.files_cluster._get_rely(self.files_cluster.KW_ID_SEQ)
+            argsort = np.argsort(id_seq)
+            id_seq  = (np.array(id_seq, dtype=np.int32)[argsort]).tolist()
+            results = np.array(results)[argsort]
+            dict_rlt:dict[int, np.ndarray] = dict(zip(id_seq, results))
+            return dict_rlt
+    
+    class _write(UnifiedFileCluster._write["MutilMaskCluster", dict[int, np.ndarray], MutilMaskFilesHandle]):
+        def split_value_as_mutil(self, core_values:dict[int, np.ndarray]):
+            id_seq = self.files_cluster._get_rely(self.files_cluster.KW_ID_SEQ)
+            value = [core_values[x] for x in id_seq]
+            return value
 
 class BopFormat(Dataset):
-    pass
+    '''
+    info:
+    rlt = {
+        "scene_camera": {KW_CAM_K: array, KW_cam_R_w2c: array, KW_cam_t_w2c: array, KW_CAM_DS:float}
+        "scene_gt": [{KW_GT_R: array, KW_GT_t: array, KW_GT_ID: int}, ...]
+    }
+    '''
+    GT_CAM_FILE_NAME    = "scene_camera"
+    GT_CAM_FILE     = GT_CAM_FILE_NAME + ".json"
+    KW_cam_R_w2c = "cam_R_w2c"
+    KW_cam_t_w2c = "cam_t_w2c"
+    KW_CAM_K = "cam_K"
+    KW_CAM_DS = "depth_scale"
+    KW_CAM_VL = "view_level"
+
+    GT_FILE_NAME        = "scene_gt"
+    GT_FILE         = GT_FILE_NAME + ".json"
+    KW_GT_R = "cam_R_m2c"
+    KW_GT_t = "cam_t_m2c"
+    KW_GT_ID = "obj_id"
+
+    GT_INFO_FILE_NAME   = "scene_gt_info"
+    GT_INFO_FILE    = GT_INFO_FILE_NAME + ".json"
+    KW_GT_INFO_BBOX_OBJ = "bbox_obj"
+    KW_GT_INFO_BBOX_VIS = "bbox_visib"
+    KW_GT_INFO_PX_COUNT_ALL = "px_count_all"
+    KW_GT_INFO_PX_COUNT_VLD = "px_count_valid"
+    KW_GT_INFO_PX_COUNT_VIS = "px_count_visib" 
+    KW_GT_INFO_VISIB_FRACT = "visib_fract"
+
+    RGB_DIR = "rgb"
+    DEPTH_DIR = "depth"
+    MASK_DIR = "mask"
+    INFO = "info"
+
+    def init_clusters_hook(self):
+        super().init_clusters_hook()
+
+        self.info_dictlike = DictLikeCluster(self, "", flag_name=self.INFO)
+        scene_camera    = DictLikeHandle.from_name(self.info_dictlike, self.GT_CAM_FILE)
+        scene_gt        = DictLikeHandle.from_name(self.info_dictlike, self.GT_FILE)
+        self.info_dictlike._set_fileshandle(0, scene_camera)
+        self.info_dictlike._set_fileshandle(1, scene_gt)
+
+        self.rgb_cluster = UnifiedFileCluster(self,     self.RGB_DIR,      suffix = ".jpg", read_func=cv2.imread, write_func=cv2.imwrite, flag_name=ViewMeta.COLOR)
+        self.depth_cluster = UnifiedFileCluster(self,   self.DEPTH_DIR,    suffix = ".png", read_func=partial(cv2.imread, flags = cv2.IMREAD_ANYDEPTH), write_func=cv2.imwrite, flag_name=ViewMeta.DEPTH)
+        self.mask_cluster = MutilMaskCluster(self,      self.MASK_DIR,     suffix = ".png", read_func=cv2.imread, write_func=cv2.imwrite, flag_name=ViewMeta.MASKS)
+        self.mask_cluster.link_rely_on(self.info_dictlike) # set rely, the obj_id is recorded in scene_gt.json
+
+    def read(self, src: int, *, force = False, **other_paras)-> ViewMeta:
+        raw_read_rlt = super().raw_read(src, force = force, **other_paras)
+        rgb     = raw_read_rlt[ViewMeta.COLOR]
+        depth   = raw_read_rlt[ViewMeta.DEPTH]
+        masks   = raw_read_rlt[ViewMeta.MASKS]
+        extr_vecs = {}
+        intr        = raw_read_rlt[self.INFO][0][self.KW_CAM_K]
+        depth_scale = raw_read_rlt[self.INFO][0][self.KW_CAM_DS]
+        infos   = raw_read_rlt[self.INFO]
+        
+        for obj_info in infos[1]:
+            posture = Posture(rmat = np.reshape(obj_info[self.KW_GT_R], (3,3)), tvec = np.reshape(obj_info[self.KW_GT_t], (3,1)))
+            extr_vecs.update({obj_info[self.KW_GT_ID]: np.array([posture.rvec, posture.tvec])})
+        
+        return ViewMeta(rgb, depth, masks, extr_vecs, intr, depth_scale, None, None, None, None)
+
+    def write(self, data_i: int, value: ViewMeta, *, force = False, **other_paras):
+        raise NotImplementedError
+
 
 class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLabelCluster", "VocFormat_6dPosture"]):
     KW_IO_RAW = "raw"
+    KW_IMAGE_SIZE = "image_size"
 
     def init_attrs(self):
         super().init_attrs()
@@ -26,7 +135,7 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
     class _read(IntArrayDictAsTxtCluster._read["cxcywhLabelCluster", dict[int, np.ndarray], UnifiedFilesHandle]):
         def postprogress_value(self, value:np.ndarray, *, image_size = None, **other_paras):
             value = super().postprogress_value(value)
-            image_size = self.files_cluster.default_image_size if image_size is None else image_size
+            image_size = get_with_priority(image_size, self.files_cluster._get_rely(cxcywhLabelCluster.KW_IMAGE_SIZE), self.files_cluster.default_image_size)
             if image_size is not None:
                 bbox_2d = value[:,1:].astype(np.float32) #[cx, cy, w, h]
                 bbox_2d = cxcywhLabelCluster._normedcxcywh_2_x1y1x2y2(bbox_2d, image_size)
@@ -40,7 +149,7 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
     class _write(IntArrayDictAsTxtCluster._write["cxcywhLabelCluster", dict[int, np.ndarray], UnifiedFilesHandle]):
         def preprogress_value(self, value:dict[int, np.ndarray], *, image_size = None, **other_paras):
             value = super().preprogress_value(value)
-            image_size = self.files_cluster.default_image_size if image_size is None else image_size
+            image_size = get_with_priority(image_size, self.files_cluster._get_rely(cxcywhLabelCluster.KW_IMAGE_SIZE), self.files_cluster.default_image_size)
             if image_size is not None:
                 bbox_2d = {}
                 for k, v in value.items():
@@ -52,10 +161,10 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
                     ClusterWarning)
             return value
 
-    def set_rely(self, relied: FilesCluster, rlt):
+    def _set_rely(self, relied: FilesCluster, rlt):
         if relied.flag_name == ViewMeta.COLOR:
             rlt:np.ndarray = rlt
-            self._relied_paras.update({"image_size": rlt.shape[:2][::-1]})
+            self._update_rely(self.KW_IMAGE_SIZE, rlt.shape[:2][::-1])
 
     def read(self, src: int, *, sub_dir = None, image_size = None, force = False,  **other_paras) -> dict[int, np.ndarray]:
         return super().read(src, sub_dir=sub_dir, image_size = image_size, force=force, **other_paras)
