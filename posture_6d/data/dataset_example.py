@@ -54,7 +54,7 @@ class MutilMaskCluster(UnifiedFileCluster[MutilMaskFilesHandle, "MutilMaskCluste
             value = [core_values[x] for x in id_seq]
             return value
 
-class BopFormat(Dataset):
+class BopFormat(Mix_Dataset[UnifiedFileCluster, "BopFormat", ViewMeta]):
     '''
     info:
     rlt = {
@@ -89,6 +89,16 @@ class BopFormat(Dataset):
     DEPTH_DIR = "depth"
     MASK_DIR = "mask"
     INFO = "info"
+
+    POSTURE_SPLITER_NAME = "posture"
+    POSTURE_SUBSETS = ["train", "val"]
+
+    SPLIT_PARA = Mix_Dataset.SPLIT_PARA.copy()
+    SPLIT_PARA.update(
+        {
+            POSTURE_SPLITER_NAME: POSTURE_SUBSETS,
+        }
+    )
 
     def init_clusters_hook(self):
         super().init_clusters_hook()

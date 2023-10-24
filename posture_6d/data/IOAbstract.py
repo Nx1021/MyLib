@@ -554,6 +554,8 @@ class _AppendNames(dict[str, Union[list[str], str]]):
 
     def __init__(self, appendnames:list[str] = None, joiner:str = '_') -> None:  # type: ignore
         super().__init__()   
+        assert isinstance(appendnames, list) or appendnames is None, f"appendnames must be a list or None"
+        assert isinstance(joiner, str), f"joiner must be a str"
         appendnames = appendnames if appendnames is not None else []
         self[self.KW_APPENDNAMES] = appendnames
         self[self.KW_JOINER] = joiner
@@ -729,6 +731,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
     DEFAULT_SUFFIX = None
     DEFAULT_PREFIX = None
     DEFAULT_PREFIX_JOINER = None
+    DEFAULT_APPENDNAMES = None
     DEFAULT_APPENDNAMES_JOINER = None
     DEFAULT_READ_FUNC = None
     DEFAULT_WRITE_FUNC = None
@@ -795,6 +798,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         suffix              = get_with_priority(suffix, self.DEFAULT_SUFFIX)
 
         prefix              = get_with_priority(prefix,             cluster.DEFAULT_PREFIX,             self.DEFAULT_PREFIX,             '')
+        appendnames         = get_with_priority(appendnames,        cluster.DEFAULT_APPENDNAMES,        self.DEFAULT_APPENDNAMES,        [''])
         prefix_joiner       = get_with_priority(prefix_joiner,      cluster.DEFAULT_PREFIX_JOINER,      self.DEFAULT_PREFIX_JOINER,      '')
         appendnames_joiner  = get_with_priority(appendnames_joiner, cluster.DEFAULT_APPENDNAMES_JOINER, self.DEFAULT_APPENDNAMES_JOINER, '')
 
@@ -812,6 +816,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         self.suffix = suffix
 
         self._prefix_obj         = _Prefix(prefix, prefix_joiner)
+        
         self._appendnames_obj    = _AppendNames(appendnames, appendnames_joiner)
     # endregion override _RegisterInstance###
 
@@ -1649,6 +1654,8 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
         cls.__init__ = method_exit_hook_decorator(cls, cls.__init__, cls.try_open, cls.has_not_inited)
         ### clear ###
         cls.clear = method_exit_hook_decorator(cls, cls.clear, cls._clear_empty_dir)
+        ### rebuild ###
+        cls.rebuild = method_exit_hook_decorator(cls, cls.rebuild, cls._rebuild_done)
         super().__init_subclass__(**kwargs)
 
     def __init__(self, top_directory:Union[str, "DatasetNode"], mapping_name: str = "", *args, flag_name:str = "", **kwargs) -> None:
@@ -1706,6 +1713,10 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
                 if len(os.listdir(os.path.join(r, dir_))) == 0:
                     os.rmdir(os.path.join(r, dir_))
     
+    def _rebuild_done(self):
+        self._reset_MemoryData_modified()
+        self.save(True)
+
     @property
     def top_directory(self):
         return self._top_directory
@@ -1835,9 +1846,10 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
             if len(self.MemoryData) > 0:
                 if DEBUG:
                     warnings.warn(f"will not rebuild")
+                self.save()
             else:
                 self.rebuild()
-            self.save()
+                # self.save(True)
         # if DEBUG:
         #     print(self)
         #     print(self.MemoryData)
@@ -2019,6 +2031,7 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
             else:
                 raise ValueError(f"invalid operation {self._get_unfinished_operation()}")
         self.remove_mark()
+        self.save()
         self._reset_last_write_unfinished()
     # endregion TODO ####
 
@@ -2306,6 +2319,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
     DEFAULT_SUFFIX = None
     DEFAULT_PREFIX = None
     DEFAULT_PREFIX_JOINER = None
+    DEFAULT_APPENDNAMES = None
     DEFAULT_APPENDNAMES_JOINER = None
     DEFAULT_READ_FUNC = None
     DEFAULT_WRITE_FUNC = None
@@ -3040,7 +3054,6 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
                 self._set_fileshandle(data_i, fh)
             else:
                 self.paste_file(data_i, fh)
-            self._reset_MemoryData_modified()
 
         for fh in list(self.MemoryData.values()):
             if fh.empty:
