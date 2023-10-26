@@ -3,7 +3,7 @@
 # from toolfunc import *
 from _collections_abc import dict_items, dict_keys, dict_values
 from collections.abc import Iterator
-from MyLib.posture_6d.data.IOAbstract import FilesCluster, Node
+from .IOAbstract import FilesCluster, Node
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy import ndarray
@@ -85,6 +85,9 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
         self.get_idx_dict()
         for subset in subsets:
             self.add_subset(subset)
+
+        self._next_valid_elem_i = 0
+        self._undefined_idx = []
 
     @property
     def exclusive(self):
@@ -191,6 +194,16 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
     
     def sort_elem(self):
         self.split_table.sort()
+
+    def merge_elem_from(self, src_data_map:"Spliter", *, force = False):
+        assert type(src_data_map) == type(self), f"src_data_map type {type(src_data_map)} != cluster type {type(self)}"
+        assert len(src_data_map) == len(self), f"src_data_map length {len(src_data_map)} != cluster length {len(self)}"
+        # TODO 
+        # with self.get_writer(force).allow_overwriting():
+        #     for elem_i in tqdm(src_data_map.elem_keys(), desc=f"merge {src_data_map} to {self}", total=src_data_map.elem_num):
+        #         self.write_elem(elem_i, src_data_map.read_elem(elem_i))
+        with self.get_writer(force).allow_overwriting():
+            self.split_table.update(src_data_map.split_table)
     ##########
 
     def _set_fileshandle(self, data_i, fh:DictLikeHandle):
@@ -223,15 +236,19 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
     def set_one_elem(self, elem_i, subsets:dict[str, bool]):
         self.write_elem(elem_i, subsets)
     
-    def set_one_subset(self, subset:str, elems:dict[int, bool]):
-        for elem_i, value in elems.items():
-            self.set_one(elem_i, subset, value)
+    def set_one_subset(self, subset:str, elems:Union[dict[int, bool], tuple[int, ...]]):
+        if isinstance(elems, dict):
+            for elem_i, value in elems.items():
+                self.set_one(elem_i, subset, value)
+        elif isinstance(elems, Iterable):
+            for elem_i in elems:
+                self.set_one(elem_i, subset, True)
     
     def one_defined(self, elem_i:int):
         if elem_i not in self.elem_keys():
             return False
         else:
-            elem = self.qurey_one_elem(elem_i)
+            elem = self.split_table.get_row(elem_i)
             if elem is None:
                 return False
             else:
@@ -253,6 +270,7 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
             # all empty, choose the first
             subset_idx = 0
         else:
+            # TODO replace by _decide_subset
             rates = np.array(total_nums) / sum(total_nums)
             subset_idx = 0
             for idx, r in enumerate(rates):
@@ -283,7 +301,7 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
         
         if split_num == 2 and isinstance(split_rate, float):
             split_rate = (split_rate, 1 - split_rate)
-        if subsets is not None and isinstance(split_rate, dict):
+        if subsets is not None and isinstance(split_rate, dict[str, float]):
             split_rate = tuple([split_rate[subset] for subset in subsets])
         elif isinstance(split_rate, Iterable):
             split_rate = tuple(split_rate)
@@ -292,6 +310,35 @@ class Spliter(DisunifiedFileCluster[SpliterFilesHandle, SP, SPG, Table[int, str,
         assert len(split_rate) == split_num, "splite_rate must have {} elements".format(split_num)
         
         return split_rate
+
+    @staticmethod
+    def _decide_subset(rlts:list[list], split_rate:tuple[float]):
+        rlt_nums = np.array([len(x) for x in rlts])
+        total_num = sum(rlt_nums)
+        if total_num == 0:
+            return 0
+        rates = rlt_nums / total_num
+        subset_idx = 0
+        for idx, r in enumerate(rates):
+            if r <= split_rate[idx]:
+                subset_idx = idx
+                break
+        return subset_idx
+
+    @staticmethod
+    def gen_split(idx_array, split_rate, split_num):
+        # TODO
+        split_rate_ = Spliter.process_split_rate(split_rate, split_num)
+
+        rlts = [[] for _ in range(len(split_rate_))]
+
+        for idx in idx_array:
+            subset_idx = Spliter._decide_subset(rlts, split_rate_)
+            rlts[subset_idx].append(idx)
+
+        if isinstance(split_rate, dict):
+            rlts = {subset: np.array(rlt) for subset, rlt in zip(split_rate.keys(), rlts)}
+        return rlts
 
     ##### as idx list #####
     def get_nums(self):
@@ -407,18 +454,23 @@ class SpliterGroup(DatasetNode[Spliter, SPG, Table[int, str, bool]], Generic[SP,
     #         if src not in self.keys():
     #             self.remove_elem(src)
 
+    def stop_writing_hook(self):
+        self.cache_to_file(force = True)
+        self.overwrite_allowed
+        super().stop_writing_hook()
+
     def update_clusters(self, log_type, src, dst, value, cluster):
         if log_type == self.LOG_READ or\
            log_type == self.LOG_CHANGE or\
            log_type == self.LOG_OPERATION:
             return
         if log_type == self.LOG_ADD:
-            self.add_elem(dst)
-        if log_type == self.LOG_REMOVE and dst in self.keys():
             if dst not in self.keys():
+                self.add_elem(dst)
+        if log_type == self.LOG_REMOVE and dst in self.keys():
                 self.remove_elem(dst)
         if log_type == self.LOG_MOVE:
             if src in self.keys():
                 self.copy_elem(src, dst)
-            if src not in self.keys():
+            if src not in self.keys(): #??
                 self.remove_elem(src)

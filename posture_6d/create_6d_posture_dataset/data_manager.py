@@ -140,8 +140,8 @@ class DataRecorder(CommonData[FrameMeta], Dataset):
         elif log_type == self.LOG_REMOVE:
             self.active_spliter.set_one(dst, self.current_category_name, False)
 
-    def rebuild(self):
-        super().rebuild()
+    def rebuild(self, force = False):
+        super().rebuild(force = force)
         # if self.num != self.spliter_group.num:
         with self.spliter_group.get_writer(True).allow_overwriting(True):
             for fh in self.rgb_elements.query_all_fileshandle():

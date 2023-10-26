@@ -325,7 +325,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
         super().__init__(dataset_node, mapping_name, *args, flag_name=flag_name, **kwargs)
         fileshandle_list = [] if fileshandle_list is None else fileshandle_list
         for fh in fileshandle_list:
-            self._set_fileshandle(self.data_i_upper, fh)
+            self._set_fileshandle(self.next_valid_data_i, fh)
 
     #####
     def create_fileshandle_in_iometa(self, src:int, dst:int, value:Any, **other_paras):
@@ -351,7 +351,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
         suffix = os.path.splitext(filename)[-1]
         assert suffix in FilesHandle.DEFAULT_FILE_TYPE, f"suffix {suffix} is not supported"
         fh = self.FILESHANDLE_TYPE.from_name(self, filename)
-        self._set_fileshandle(self.data_i_upper, fh)
+        self._set_fileshandle(self.next_valid_data_i, fh)
 
     def cvt_key(self, key:Union[int, str, DisunifiedFilesHandle]):
         key = super().cvt_key(key)
@@ -379,7 +379,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
         def get_file_core_func(self, src_file_handle: DisunifiedFilesHandle, dst_file_handle: DisunifiedFilesHandle, value) -> Callable[..., Any]:
             return dst_file_handle.write_func
         
-    def rebuild(self):
+    def rebuild(self, force = False):
         run_rebuild = True
         for dm in self._registry.values():
             if dm.data_path == self.data_path:
@@ -388,7 +388,7 @@ class DisunifiedFileCluster(FilesCluster[DFH, DFC, DSNT, VDMT], Generic[DFH, DFC
                 run_rebuild = False
                 break
         if run_rebuild:
-            super().rebuild()
+            super().rebuild(force = force)
 
     @staticmethod
     def Test():
@@ -487,14 +487,10 @@ class DictLikeHandle(DisunifiedFilesHandle[DLC, dict[int, Any]], Generic[DLC]):
     @property
     def elem_num(self):
         return len(self.cache)
-    
-    @property
-    def elem_i_upper(self):
-        return max(self.cache.keys(), default=-1) + 1
-    
-    @property
-    def elem_continuous(self):
-        return self.elem_i_upper == self.elem_num
+
+    # @property
+    # def elem_i_upper(self):
+    #     return max(self.cache.keys(), default=-1) + 1
         
     def erase_cache(self):
         if not self.is_closed and not self.is_readonly:
@@ -682,7 +678,7 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDLT], Generic[DLFH
         assert suffix in FilesHandle.DEFAULT_FILE_TYPE, f"suffix {suffix} is not supported"
         assert issubclass(FilesHandle.DEFAULT_FILE_TYPE[suffix][2], dict), f"suffix {suffix} is not supported"
         fh = self.FILESHANDLE_TYPE.from_name(self, filename)
-        self._set_fileshandle(self.data_i_upper, fh)
+        self._set_fileshandle(self.next_valid_data_i, fh)
 
     def save_without_cache(self):
         '''
@@ -700,7 +696,7 @@ class DictLikeCluster(DisunifiedFileCluster[DLFH, DLC, DSNT, VDLT], Generic[DLFH
         new_cluster.open()
         for fh in cluster.query_all_fileshandle():
             new_fh = cls.FILESHANDLE_TYPE.from_fileshandle(new_cluster, fh, cache={})
-            new_cluster._set_fileshandle(new_cluster.data_i_upper, new_fh)
+            new_cluster._set_fileshandle(new_cluster.next_valid_data_i, new_fh)
         return new_cluster
 
     @staticmethod
@@ -906,12 +902,15 @@ class NdarrayAsTxtCluster(UnifiedFileCluster[UFH, NDAC, DSNT, VNDAC], Generic[UF
 IntArrayDict = dict[int, np.ndarray]
 class IntArrayDictAsTxtCluster(NdarrayAsTxtCluster[UFH, INDADC, DSNT, IntArrayDict], Generic[UFH, INDADC, DSNT]):
 
+    DEFAULT_VALUE_TYPE = dict
+
     @staticmethod
     def read_inv_format(self:IOMeta["IntArrayDictAsTxtCluster", IntArrayDict, UnifiedFilesHandle], array:np.ndarray):
         '''
         array: np.ndarray [N, 5]
         '''
         dict_ = {}
+        array = np.reshape(array, (-1, array.shape[-1]))
         for i in range(array.shape[0]):
             dict_[int(array[i, 0])] = array[i, 1:].reshape(self.files_cluster.array_shape)
         return dict_

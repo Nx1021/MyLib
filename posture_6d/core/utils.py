@@ -12,7 +12,7 @@ import pickle
 import warnings
 import cv2
 
-from typing import Generic, TypeVar, Union, Callable, Iterable, Type
+from typing import Generic, TypeVar, Union, Callable, Iterable, Type, Mapping
 import types
 from collections import OrderedDict
 
@@ -419,17 +419,21 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
     KW_col_name_type = "col_name_type"
     KW_data = "data"
 
-    def __init__(self, row_names:list[ROWKEYT] = None, col_names:list[COLKETT] = None, default_value_type:type[ITEM] = None,
-                 *, 
+    def __init__(self, data:dict = None, *, 
+                 row_names:list[ROWKEYT] = None, 
+                 col_names:list[COLKETT] = None, 
+                 default_value_type:type[ITEM] = None,
                  row_name_type = str, 
-                 col_name_type = str,
-                 data:dict = None):
+                 col_name_type = str):
         self.__data:dict[ROWKEYT, dict[COLKETT, ITEM]] = {}
         self.__row_names:list[ROWKEYT] = []
         self.__col_names:list[COLKETT] = []
         self.__default_value_type = default_value_type
         data = {} if data is None else data
-        assert isinstance(data, dict), "data must be a dict"
+        assert isinstance(data, (Mapping, Table)), "data must be a dict"
+        if isinstance(data, Table):
+            data = data.to_dict()
+        data = dict(data)
         if len(data) > 0:
             row_name_type, col_name_type = self.get_type(data, row_name_type, col_name_type)
             self.__row_name_type:Type[ROWKEYT] = row_name_type
@@ -828,12 +832,12 @@ class Table(Generic[ROWKEYT, COLKETT, ITEM]):
 
     @classmethod
     def from_dict(cls:type["Table"], dict_:dict):
-        table = cls(row_names=dict_[cls.KW_row_names], 
-                    col_names=dict_[cls.KW_col_names], 
+        table = cls(data        = dict_[cls.KW_data],
+                    row_names   = dict_[cls.KW_row_names], 
+                    col_names   = dict_[cls.KW_col_names], 
                     default_value_type  = eval(dict_[cls.KW_default_value_type]),
                     row_name_type       = eval(dict_[cls.KW_row_name_type]), 
-                    col_name_type       = eval(dict_[cls.KW_col_name_type]),
-                    data=dict_[cls.KW_data])
+                    col_name_type       = eval(dict_[cls.KW_col_name_type]))
         return table
 
     def save(self, path):

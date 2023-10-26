@@ -1,11 +1,9 @@
 from typing import Callable
 
-from MyLib.posture_6d.data.IOAbstract import FilesCluster
-
-from .dataset import Dataset, DatasetNode, Mix_Dataset
+from .dataset import Dataset, DatasetNode, Mix_Dataset, Spliter, FCT, DST, VDST
 from .dataCluster import UnifiedFileCluster, DisunifiedFileCluster, DictLikeCluster, UnifiedFilesHandle, DisunifiedFilesHandle, DictLikeHandle,\
     IntArrayDictAsTxtCluster, NdarrayAsTxtCluster
-from .IOAbstract import ClusterWarning, FilesCluster, get_with_priority
+from .IOAbstract import ClusterWarning, FilesCluster, get_with_priority, IO_CTRL_STRATEGY
 from .viewmeta import ViewMeta
 from ..core.utils import deserialize_object, serialize_object, rebind_methods
 from ..core.posture import Posture
@@ -14,6 +12,63 @@ import numpy as np
 import cv2
 import warnings
 from functools import partial
+
+class PostureDataset(Mix_Dataset[FCT, DST, VDST]):
+    POSTURE_SPLITER_NAME = "posture"
+    POSTURE_SUBSETS = ["train", "val"]
+
+
+    SPLIT_PARA = Mix_Dataset.SPLIT_PARA.copy()
+    SPLIT_PARA.update(
+        {
+            POSTURE_SPLITER_NAME: POSTURE_SUBSETS,
+        }
+    )
+
+    def split_for_posture(self, ratio = 0.15, source:list[int] = None):
+        """
+        Only take ratio of the real data as the verification set
+        """
+        # assert self.reality_spliter.total_num == self.data_num, "reality_spliter.total_num != data_num"
+        # assert self.basis_spliter.total_num == self.data_num, "basis_spliter.total_num != data_num"
+        
+        real_idx = self.reality_spliter.get_idx_list(0)
+        sim_idx  = self.reality_spliter.get_idx_list(1)
+
+        real_base_idx = list(set(real_idx).intersection(self.basis_spliter.get_idx_list(self.BASIS_SUBSETS[0])))
+
+        if source is None:
+            pass
+        else:
+            real_idx = list(set(real_idx).intersection(source))
+            real_base_idx = list(set(real_base_idx).intersection(source))
+            sim_idx  = list(set(sim_idx).intersection(source))
+
+        train_real, val_real = Spliter.gen_split(real_base_idx, ratio, 2)
+
+        self.posture_spliter.set_one_subset(self.POSTURE_SUBSETS[1], val_real)
+
+        posture_train_idx_list = np.setdiff1d(
+            np.union1d(real_idx, sim_idx),
+            self.posture_val_idx_array
+            ).astype(np.int32).tolist()
+
+        self.posture_spliter.set_one_subset(self.POSTURE_SUBSETS[0], posture_train_idx_list)
+
+        self.posture_spliter.split_table.sort()
+
+    @property
+    def posture_spliter(self):
+        return self.spliter_group.get_cluster(self.POSTURE_SPLITER_NAME)
+    
+    @property
+    def posture_train_idx_array(self):
+        return self.posture_spliter.get_idx_list(self.POSTURE_SUBSETS[0])
+    
+    @property
+    def posture_val_idx_array(self):
+        return self.posture_spliter.get_idx_list(self.POSTURE_SUBSETS[1])
+
 
 class MutilMaskFilesHandle(UnifiedFilesHandle):
     pass
@@ -54,7 +109,7 @@ class MutilMaskCluster(UnifiedFileCluster[MutilMaskFilesHandle, "MutilMaskCluste
             value = [core_values[x] for x in id_seq]
             return value
 
-class BopFormat(Mix_Dataset[UnifiedFileCluster, "BopFormat", ViewMeta]):
+class BopFormat(PostureDataset[UnifiedFileCluster, "BopFormat", ViewMeta]):
     '''
     info:
     rlt = {
@@ -89,16 +144,6 @@ class BopFormat(Mix_Dataset[UnifiedFileCluster, "BopFormat", ViewMeta]):
     DEPTH_DIR = "depth"
     MASK_DIR = "mask"
     INFO = "info"
-
-    POSTURE_SPLITER_NAME = "posture"
-    POSTURE_SUBSETS = ["train", "val"]
-
-    SPLIT_PARA = Mix_Dataset.SPLIT_PARA.copy()
-    SPLIT_PARA.update(
-        {
-            POSTURE_SPLITER_NAME: POSTURE_SUBSETS,
-        }
-    )
 
     def init_clusters_hook(self):
         super().init_clusters_hook()
@@ -147,9 +192,10 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
             value = super().postprogress_value(value)
             image_size = get_with_priority(image_size, self.files_cluster._get_rely(cxcywhLabelCluster.KW_IMAGE_SIZE), self.files_cluster.default_image_size)
             if image_size is not None:
-                bbox_2d = value[:,1:].astype(np.float32) #[cx, cy, w, h]
-                bbox_2d = cxcywhLabelCluster._normedcxcywh_2_x1y1x2y2(bbox_2d, image_size)
-                value[:,1:] = bbox_2d   
+                for id_, array in value.items():
+                    bbox_2d = array.astype(np.float32) #[cx, cy, w, h]
+                    bbox_2d = cxcywhLabelCluster._normedcxcywh_2_x1y1x2y2(bbox_2d, image_size)
+                    value[id_] = bbox_2d
             else:
                 if image_size != self.files_cluster.KW_IO_RAW:
                     warnings.warn("image_size is None, bbox_2d will not be converted from normed cxcywh to x1x2y1y2",
@@ -229,19 +275,8 @@ class cxcywhLabelCluster(IntArrayDictAsTxtCluster[UnifiedFilesHandle, "cxcywhLab
         bbox_normed = np.concatenate([cx_normed, cy_normed, w_normed, h_normed], axis=-1)
         return bbox_normed
 
-class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture", ViewMeta]):
+class VocFormat_6dPosture(PostureDataset[UnifiedFileCluster, "VocFormat_6dPosture", ViewMeta]):
     KW_IMGAE_DIR = "images"
-
-    POSTURE_SPLITER_NAME = "posture"
-    POSTURE_SUBSETS = ["train", "val"]
-
-
-    SPLIT_PARA = Mix_Dataset.SPLIT_PARA.copy()
-    SPLIT_PARA.update(
-        {
-            POSTURE_SPLITER_NAME: POSTURE_SUBSETS,
-        }
-    )
 
     def __init__(self, directory, *, flag_name="", parent: DatasetNode = None) -> None:
         super().__init__(directory, flag_name=flag_name, parent=parent)
@@ -309,7 +344,7 @@ class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture",
     def deserialize_mask_dict(obj, mask_bytes_dict:dict[int, bytes]):
         def deserialize_image(image_bytes):  
             image_array = np.frombuffer(image_bytes, dtype=np.uint8)
-            image = cv2.imdecode(image_array)# 将numpy数组解码为图像
+            image = cv2.imdecode(image_array, cv2.IMREAD_ANYDEPTH)# 将numpy数组解码为图像
             return image
         new_value = dict(zip(mask_bytes_dict.keys(), [deserialize_image(x) for x in mask_bytes_dict.values()]))
         return new_value
@@ -338,3 +373,38 @@ class VocFormat_6dPosture(Mix_Dataset[UnifiedFileCluster, "VocFormat_6dPosture",
     def write(self, data_i: int, value: ViewMeta, *, force = False, **other_paras):
         sub_dir = self.get_default_set_of(data_i)
         super().raw_write(data_i, value.as_dict(), sub_dir = sub_dir, force = force, **other_paras)
+
+    def file_to_cache_simple(self, *, force = False):
+        self.file_to_cache(force = force)
+        # self.masks_elements.file_to_cache(force = force, auto_decide=False)
+
+    def copy_from_simplified(self, src_dataset:"VocFormat_6dPosture", *, cover = False, force = False):
+        
+        # masks_elements_strategy         = self.masks_elements.get_io_ctrl_strategy()
+        extr_vecs_elements_strategy     = self.extr_vecs_elements.get_io_ctrl_strategy()
+        intr_elements_strategy          = self.intr_elements.get_io_ctrl_strategy()
+        depth_scale_elements_strategy   = self.depth_scale_elements.get_io_ctrl_strategy()
+        bbox_3ds_elements_strategy      = self.bbox_3ds_elements.get_io_ctrl_strategy()
+        landmarks_elements_strategy     = self.landmarks_elements.get_io_ctrl_strategy()
+        visib_fracts_element_strategy   = self.visib_fracts_element.get_io_ctrl_strategy()
+        # labels_elements_strategy        = self.labels_elements.get_io_ctrl_strategy()
+
+        # self.masks_elements.set_io_ctrl_strategy(       IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        self.extr_vecs_elements.set_io_ctrl_strategy(   IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        self.intr_elements.set_io_ctrl_strategy(        IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        self.depth_scale_elements.set_io_ctrl_strategy( IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        self.bbox_3ds_elements.set_io_ctrl_strategy(    IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        self.landmarks_elements.set_io_ctrl_strategy(   IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        self.visib_fracts_element.set_io_ctrl_strategy( IO_CTRL_STRATEGY.CACHE_IDPNDT)
+        # self.labels_elements.set_io_ctrl_strategy(      IO_CTRL_STRATEGY.CACHE_IDPNDT)
+
+        self.copy_from(src_dataset, cover = cover, force = force)
+
+        # self.masks_elements.set_io_ctrl_strategy(masks_elements_strategy)
+        self.extr_vecs_elements.set_io_ctrl_strategy(extr_vecs_elements_strategy)
+        self.intr_elements.set_io_ctrl_strategy(intr_elements_strategy)
+        self.depth_scale_elements.set_io_ctrl_strategy(depth_scale_elements_strategy)
+        self.bbox_3ds_elements.set_io_ctrl_strategy(bbox_3ds_elements_strategy)
+        self.landmarks_elements.set_io_ctrl_strategy(landmarks_elements_strategy)
+        self.visib_fracts_element.set_io_ctrl_strategy(visib_fracts_element_strategy)
+        # self.labels_elements.set_io_ctrl_strategy(labels_elements_strategy)
