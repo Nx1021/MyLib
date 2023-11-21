@@ -706,7 +706,7 @@ class InteractIcp():
                                 ((0,0,1),(1,0,0)),((0,0,-1),(1,0,0))] #[(front, up)]
         self.view_switch:int = 0 #int
         self.ckt = None
-        self.cover_data_comfirm = False
+        self.cover_data_confirm = False
         # 相机视角
         self.is_camera_mode = False
         self.is_mask_visible = True
@@ -878,7 +878,7 @@ class InteractIcp():
         vis.add_geometry(self.std_model_frame)
         self.pre_progress()        
 
-    def comfirm(self, vis):
+    def confirm(self, vis):
         saved = self.post_progress()
         if saved:
             self.skip(vis)
@@ -918,7 +918,7 @@ class InteractIcp():
     def current_std_mi_transform(self, vis, T):
         self.current_std_mi.transform(T, False)  
         self.std_model_frame.transform(T)  
-        self.cover_data_comfirm = False
+        self.cover_data_confirm = False
         if vis is not None:
             vis.update_geometry(self.current_std_mi.mesh)
             vis.update_geometry(self.std_model_frame)
@@ -1126,11 +1126,11 @@ class InteractIcp():
         # except:
         #     pass
         # else:
-        if self.current_index in self.model_manager.icp_std_mesh and self.cover_data_comfirm == False:
+        if self.current_index in self.model_manager.icp_std_mesh and self.cover_data_confirm == False:
             print("文件已经存在，再次按下确认覆盖")
-            self.cover_data_comfirm = True
+            self.cover_data_confirm = True
             return False                   
-        self.cover_data_comfirm = False
+        self.cover_data_confirm = False
         self.model_manager.icp_trans.write(self.current_index, trans_mat, force=True)
         self.model_manager.icp_std_mesh.write(self.current_index, self.current_std_mi.mesh, force=True)
         return True
@@ -1167,7 +1167,7 @@ class InteractIcp():
         key_to_callback[ord("4")] = self.set_is_mask_visible
 
         key_to_callback[ord("J")] = self.skip
-        key_to_callback[ord("N")] = self.comfirm
+        key_to_callback[ord("N")] = self.confirm
         # key_to_callback[ord("K")] = self.GA_registration
         key_to_callback[ord("M")] = self.auto_icp
         # key_to_callback[ord(",")] = self.place_step
