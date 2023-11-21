@@ -20,7 +20,7 @@ import warnings
 import sys
 
 from abc import ABC, abstractmethod
-from typing import Any, Union, Callable, TypeVar, Generic, Iterable, Generator
+from typing import Any, Union, Callable, TypeVar, Generic, Iterable, Generator, Optional, List
 from functools import partial
 import functools
 import copy
@@ -52,6 +52,8 @@ from numpy import ndarray
 
 _KT = TypeVar('_KT')
 _VT = TypeVar('_VT')
+T = TypeVar('T')
+T_MUITLSTR = TypeVar('T_MUITLSTR', str, List[str])
 
 # region Errors and Warnings ###
 class AmbiguousError(ValueError):
@@ -119,11 +121,13 @@ def is_subpath(child_path, parent_path):
     relative_path:str = os.path.relpath(child_path, parent_path)
     return not relative_path.startswith('..')
 
-def get_with_priority(*args):
+def get_with_priority(*args:Union[T, None]) -> T:
     assert len(args) > 0, "at least one parameter is needed"
     for arg in args:
         if arg is not None:
             return arg
+    # raise ValueError("at least one parameter is needed")
+    return None
         
 def get_func_name(obj, func):
     func_name = func.__name__
@@ -640,24 +644,24 @@ class _AppendNames(dict[str, Union[list[str], str]]):
     def as_dict(self):
         return dict(self)
 
-class CacheProxy():
+class CacheProxy(Generic[VDMT]):
     KW_cache = "cache"
     KW_value_type = "value_type"
 
     _unpickleable_type  = []
     _pickleable_type    = []
 
-    def __init__(self, cache, value_type = None, value_init_func:Callable = None) -> None:
-        self.__cache = None
+    def __init__(self, cache, value_type:Optional[type[VDMT]] = None, value_init_func:Optional[Callable] = None) -> None:
+        self.__cache:Optional[VDMT] = None
         self.synced = False
-        self.__value_type = value_type
-        self.__value_init_func = value_init_func if value_init_func is not None else value_type
+        self.__value_type:Optional[type[VDMT]] = value_type
+        self.__value_init_func:Optional[Callable] = value_init_func if value_init_func is not None else value_type
 
         self.cache = cache
         self.init_cache()
         
     @property
-    def value_type(self) -> type:
+    def value_type(self) -> type[VDMT]:
         return self.__value_type # type: ignore
     
     # @value_type.setter
@@ -672,7 +676,7 @@ class CacheProxy():
     #         self.__value_type = None
 
     @property
-    def cache(self):
+    def cache(self) -> Union[VDMT, None]:
         return self.__cache
     
     @cache.setter
@@ -835,11 +839,11 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         return self.corename
 
     def init_identity(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
-                 prefix:str = None, appendnames:Union[str, list[str]] = None,  # type: ignore
-                 prefix_joiner:str = None, appendnames_joiner:str = None,
+                 prefix:Optional[str] = None, appendnames:Optional[Union[str, list[str]]] = None,  # type: ignore
+                 prefix_joiner:Optional[str] = None, appendnames_joiner:Optional[str] = None,
                  data_path = "",
-                 read_func:Callable = None, write_func:Callable = None, 
-                 cache = None, value_type:Callable = None):
+                 read_func:Optional[Callable] = None, write_func:Optional[Callable] = None, 
+                 cache = None, value_type:Optional[type] = None):
         '''
         principle: the parameter of identity can not be changed once it has been inited
         '''
@@ -851,6 +855,8 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
         prefix              = get_with_priority(prefix,             cluster.DEFAULT_PREFIX,             self.DEFAULT_PREFIX,             '')
         appendnames         = get_with_priority(appendnames,        cluster.DEFAULT_APPENDNAMES,        self.DEFAULT_APPENDNAMES,        [''])
+        if isinstance(appendnames, str):
+            appendnames = [appendnames]
         prefix_joiner       = get_with_priority(prefix_joiner,      cluster.DEFAULT_PREFIX_JOINER,      self.DEFAULT_PREFIX_JOINER,      '')
         appendnames_joiner  = get_with_priority(appendnames_joiner, cluster.DEFAULT_APPENDNAMES_JOINER, self.DEFAULT_APPENDNAMES_JOINER, '')
 
@@ -895,11 +901,11 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     # region - init
     def __init__(self, cluster:FCT, sub_dir:str, corename:str, suffix:str, * ,
-                 prefix:str = None, appendnames:Union[str, list[str]] = None,  # type: ignore
-                 prefix_joiner:str = None, appendnames_joiner:str = None,
+                 prefix:Optional[str] = None, appendnames:Union[str, list[str]] = None,  # type: ignore
+                 prefix_joiner:Optional[str] = None, appendnames_joiner:Optional[str] = None,
                  data_path = "",
-                 read_func:Callable = None, write_func:Callable = None, 
-                 cache = None, value_type:Callable = None) -> None: #type: ignore
+                 read_func:Optional[Callable] = None, write_func:Optional[Callable] = None, 
+                 cache = None, value_type:Optional[type[VDMT]] = None) -> None: #type: ignore
         super().__init__()
         ### init_identity has been called ###
         (   sub_dir, corename, suffix, 
@@ -931,7 +937,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         default_value_type = get_with_priority(self.cluster.DEFAULT_VALUE_INIT_FUNC, 
                                                self.DEFAULT_VALUE_INIT_FUNC,
                                                self.DEFAULT_VALUE_TYPE)
-        self.cache_proxy:CacheProxy = CacheProxy(cache, value_type, default_value_type)
+        self.cache_proxy:CacheProxy[VDMT] = CacheProxy[VDMT](cache, value_type, default_value_type)
 
         self.init_additional_hook()
 
@@ -958,7 +964,9 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     # region - export and import func
     @classmethod
-    def export_func(cls, func:Callable):
+    def export_func(cls, func:Union[Callable, None]):
+        if func is None:
+            return None
         if func in cls._unpickleable_func:
             unpickleable = True
         elif func in cls._pickleable_func:
@@ -1067,18 +1075,18 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         cls.GET_INSTANCE_STRATEGY = 1
         return cls
 
-
     @staticmethod
-    def _parse_path_to_name(cluster:"FilesCluster", path:str):
+    def _parse_path_to_name(cluster:"FilesCluster", path:T_MUITLSTR)->T_MUITLSTR:
         datapath = cluster.data_path
         if isinstance(path, str):
             assert is_subpath(path, datapath), "cannot create a fileshandle object which is not in the data_path"
             filename = os.path.relpath(path, datapath)
+            return filename
         else:
             assert len(path) > 0, f"path must be a str or a list of str"
             assert all([datapath in p for p in path]), "cannot create a fileshandle object which is not in the data_path"
             filename = [os.path.relpath(p, datapath) for p in path]
-        return filename
+            return filename
 
     @staticmethod
     def _default_parse_file_name(file_name:str, prefix_joiner, appendnames_joiner, _extract_corename_func = None):
@@ -1115,29 +1123,46 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     @classmethod
     def from_path(cls, cluster:FCT, path:Union[str, list[str]], *,
-                  prefix_joiner:str = None, appendnames_joiner:str = None, 
-                  read_func:Callable = None, write_func:Callable = None, 
-                  cache = None, value_type:Callable = None,  #type: ignore
-                  _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None): #type: ignore
-        datapath = cluster.data_path
-        if isinstance(path, str):
-            assert is_subpath(path, datapath), "cannot create a fileshandle object which is not in the data_path"
-            filename = os.path.relpath(path, datapath)
-        else:
-            assert len(path) > 0, f"path must be a str or a list of str"
-            assert all([datapath in p for p in path]), "cannot create a fileshandle object which is not in the data_path"
-            filename = [os.path.relpath(p, datapath) for p in path]
-        return cls.from_name(cluster, filename,
-                                prefix_joiner = prefix_joiner, appendnames_joiner = appendnames_joiner,
-                                read_func = read_func, write_func = write_func, 
-                                cache = cache, value_type = value_type,  #type: ignore
-                                _extract_corename_func = _extract_corename_func)
+                      prefix_joiner:Optional[str] = None, appendnames_joiner:Optional[str] = None, 
+                      read_func:Optional[Callable] = None, write_func:Optional[Callable] = None, 
+                      cache:Optional = None, value_type:Optional[type] = None,  #type: ignore
+                      _extract_corename_func:Optional[Callable[[str], tuple[str, str, str, str, str]]] = None) -> Any:
+            """
+            Create a fileshandle object from a file path or a list of file paths.
+
+            Args:
+                cluster (FCT): The cluster object.
+                path (Union[str, list[str]]): The file path or a list of file paths.
+                prefix_joiner (str, optional): The prefix joiner. Defaults to None.
+                appendnames_joiner (str, optional): The append names joiner. Defaults to None.
+                read_func (Callable, optional): The read function. Defaults to None.
+                write_func (Callable, optional): The write function. Defaults to None.
+                cache (Any, optional): The cache object. Defaults to None.
+                value_type (Callable, optional): The value type. Defaults to None.
+                _extract_corename_func (Callable[[str], tuple[str, str, str, str, str]], optional): The extract core name function. Defaults to None.
+
+            Returns:
+                Any: The fileshandle object.
+            """
+            datapath = cluster.data_path
+            if isinstance(path, str):
+                assert is_subpath(path, datapath), "cannot create a fileshandle object which is not in the data_path"
+                filename = os.path.relpath(path, datapath)
+            else:
+                assert len(path) > 0, f"path must be a str or a list of str"
+                assert all([datapath in p for p in path]), "cannot create a fileshandle object which is not in the data_path"
+                filename = [os.path.relpath(p, datapath) for p in path]
+            return cls.from_name(cluster, filename,
+                                    prefix_joiner = prefix_joiner, appendnames_joiner = appendnames_joiner,
+                                    read_func = read_func, write_func = write_func, 
+                                    cache = cache, value_type = value_type,  #type: ignore
+                                    _extract_corename_func = _extract_corename_func)
     @classmethod
     def from_name(cls, cluster:FCT, filename:Union[str, list[str]], *,
-                  prefix_joiner:str = None, appendnames_joiner:str = None, 
-                  read_func:Callable = None, write_func:Callable = None, 
-                  cache = None, value_type:Callable = None,  #type: ignore
-                  _extract_corename_func:Callable[[str], tuple[str, str, str, str, str]] = None):
+                  prefix_joiner:Optional[str] = None, appendnames_joiner:Optional[str] = None, 
+                  read_func:Optional[Callable] = None, write_func:Optional[Callable] = None, 
+                  cache = None, value_type:Optional[type] = None,  #type: ignore
+                  _extract_corename_func:Optional[Callable[[str], tuple[str, str, str, str, str]]] = None):
         '''
         cluster: the FilesCluster object
         filename: the name of the file, can be a str or a list of str
@@ -1195,10 +1220,10 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     @classmethod
     def from_fileshandle(cls, cluster:FCT, file_handle:"FilesHandle", *,
-                        sub_dir:str = None, corename:str = None, suffix:str = None, #type: ignore
-                        prefix:str = None, appendnames:Union[str, list[str]] = None, prefix_joiner:str = None, appendnames_joiner:str = None, #type: ignore
-                        read_func:Callable = None, write_func:Callable = None, 
-                        cache = None, value_type:Callable = None): #type: ignore
+                        sub_dir:Optional[str] = None, corename:Optional[str] = None, suffix:Optional[str] = None, #type: ignore
+                        prefix:Optional[str] = None, appendnames:Union[str, list[str]] = None, prefix_joiner:Optional[str] = None, appendnames_joiner:Optional[str] = None, #type: ignore
+                        read_func:Optional[Callable] = None, write_func:Optional[Callable] = None, 
+                        cache = None, value_type:Optional[type] = None): #type: ignore
         sub_dir             = get_with_priority(sub_dir, file_handle.sub_dir)
         corename            = get_with_priority(corename, file_handle.corename)
         suffix              = get_with_priority(suffix, file_handle.suffix, cluster.DEFAULT_SUFFIX, cls.DEFAULT_SUFFIX)
@@ -1379,7 +1404,7 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
 
     # region cache
     @property
-    def cache(self) -> VDMT:
+    def cache(self) -> Union[VDMT, None]:
         # if not self.is_closed:
         #     if not self.is_readonly:
         #         return self.cache_proxy.cache
@@ -1403,13 +1428,13 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
         if not self.is_closed and not self.is_readonly:
             self.cache_proxy.cache = None    
 
-    def _unsafe_get_cache(self) -> VDMT:
+    def _unsafe_get_cache(self) -> Union[VDMT, None]:
         '''
         not recommended, use with caution
         '''
         return self.cache_proxy.cache
 
-    def read(self) -> Union[VDMT, list[VDMT]]:
+    def read(self) -> Union[VDMT, list[VDMT], None]:
         if self.read_func is not None:
             path = self.get_path()
             if isinstance(path, str):
@@ -1422,6 +1447,8 @@ class FilesHandle(_RegisterInstance["FilesHandle"], Generic[FCT, VDMT]):
                         rlts.append(self.read_func(p))
                     else:
                         rlts.append(None)
+                return rlts
+        return None
 
     def set_synced(self, synced:bool = True):
         if self.has_cache and self.all_file_exist:
@@ -1554,7 +1581,7 @@ class Node(Generic[NODE]):
     KW_BI_DIRECTION = "bid"
 
     def __init__(self) -> None:
-        self.__parent:list[NODE] = [None]
+        self.__parent:list[Optional[NODE]] = [None]
         self.__children:list[NODE] = []
 
         self.linked_with_children = True
@@ -1650,7 +1677,7 @@ class Node(Generic[NODE]):
     #     return bi_direction_propagate_wrapper
 
     @property
-    def parent(self) -> NODE:
+    def parent(self) -> Union[NODE, None]:
         return self.__parent[0]
     
     @property
@@ -1660,7 +1687,7 @@ class Node(Generic[NODE]):
     def _set_parent(self, parent):
         self.__parent[0] = parent
 
-    def _add_child(self, child_node:NODE):
+    def _add_child(self, child_node:"Node"):
         child_type = self.CHILD_TYPE if self.CHILD_TYPE is not None else Node
         assert isinstance(child_node, child_type), f"child_node must be Node, not {type(child_node)}"
         if child_node in self._children:
@@ -1668,7 +1695,7 @@ class Node(Generic[NODE]):
         child_node._set_parent(self)
         self.__children.append(child_node)
 
-    def _remove_child(self, child_node:NODE):
+    def _remove_child(self, child_node:"Node"):
         child_type = self.CHILD_TYPE if self.CHILD_TYPE is not None else Node
         assert isinstance(child_node, child_type), f"child_node must be Node, not {type(child_node)}"
         if child_node in self._children:
@@ -2014,9 +2041,14 @@ class DataMapping(IOStatusManager, _RegisterInstance["DataMapping"], Node["DataM
                 MemoryData = pickle.load(f)
             self.merge_MemoryData(MemoryData)
         if os.path.exists(self.MemoryData_path):
-            MemoryData = self.load_postprocess(self.__class__.load_memory_func(self.MemoryData_path))
-            self.merge_MemoryData(MemoryData) ## TODO
-        else:
+            try:
+                MemoryData = self.load_postprocess(self.__class__.load_memory_func(self.MemoryData_path))
+                rebuild = False
+            except:
+                rebuild = True
+            else:
+                self.merge_MemoryData(MemoryData) ## TODO
+        if not os.path.exists(self.MemoryData_path) or rebuild:
             if len(self.MemoryData) > 0:
                 if DEBUG:
                     warnings.warn(f"will not rebuild")
@@ -2263,7 +2295,7 @@ class IOMeta(ABC, Generic[FCT, VDMT, FHT]):
 
     def __init__(self, files_cluster:FCT) -> None:
         self.files_cluster:FCT = files_cluster
-        self.core_func:Callable = None #type: ignore
+        self.core_func:Optional[Callable] = None #type: ignore
         self.core_func_binded_paras = {}
 
         self.__cache_priority = True
@@ -3345,7 +3377,7 @@ class FilesCluster(DataMapping[FHT, FCT, VDMT], Generic[FHT, FCT, DSNT, VDMT]):
         new_dict = {int(k): None for k in data.keys()}
         # for k, v in tqdm(data.items(), desc=f"loading {self}", total=len(new_dict), leave=False):
         #     new_dict[int(k)] = self.FILESHANDLE_TYPE.from_dict(self, v)
-        keys, values = zip(*data.items())
+        # keys, values = zip(*data.items())
 
         for k, v in tqdm(data.items(), desc=f"loading {self}", total=len(new_dict), leave=False):
             new_dict[int(k)] = self.FILESHANDLE_TYPE.from_dict(self, v)
